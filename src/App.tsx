@@ -480,6 +480,7 @@ export default function App() {
   const [currentTournament, setCurrentTournament] = useState<string>("Predator League Qualifiers");
   const [recruitConfig, setRecruitConfig] = useState<{ rates: RecruitRate[]; pool: Record<string, string[]> } | null>(null);
   const [testCoinsAdded, setTestCoinsAdded] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const commentaryScrollRef = useRef<HTMLDivElement>(null);
   const matchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -578,11 +579,16 @@ export default function App() {
   const fetchData = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/state`);
+      if (!res.ok) {
+        setApiError(`Server returned ${res.status}. Check that the backend is running and VITE_API_URL is set correctly.`);
+        return;
+      }
       const data = await res.json();
       if (data.state != null) setState(data.state);
       if (Array.isArray(data.players)) setPlayers(data.players);
+      setApiError(null);
     } catch (err) {
-      console.error('Failed to fetch state', err);
+      setApiError(err instanceof Error ? err.message : 'Cannot reach server. Set VITE_API_URL to your Railway URL and redeploy.');
     }
   };
 
@@ -785,7 +791,20 @@ export default function App() {
     setIsMatching(false);
   };
 
-  if (!state) return <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center font-mono">Loading Bootcamp...</div>;
+  if (!state) return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center font-mono p-6 text-center">
+      <p className="text-zinc-400 mb-4">Loading Bootcamp...</p>
+      {apiError && (
+        <div className="max-w-md rounded-lg bg-red-500/10 border border-red-500/30 p-4 text-left text-sm text-red-300">
+          <p className="font-semibold mb-2">Could not load game data</p>
+          <p className="mb-2">{apiError}</p>
+          <p className="text-zinc-500 text-xs">
+            Deploy the backend to Railway, then in Vercel set <code className="bg-zinc-800 px-1">VITE_API_URL</code> to your Railway URL and redeploy.
+          </p>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-[#050505] text-zinc-300 font-sans selection:bg-emerald-500/30">
