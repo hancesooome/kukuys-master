@@ -32,6 +32,7 @@ interface Player {
   is_streaming: number;
   image_url?: string | null;
   team?: string | null;
+  role?: string | null;
   grinding_until?: number | null;
   sleeping_until?: number | null;
 }
@@ -475,6 +476,7 @@ export default function App() {
   const [kukuysMatchStarted, setKukuysMatchStarted] = useState(false);
   const [currentTournament, setCurrentTournament] = useState<string>("Predator League Qualifiers");
   const [recruitConfig, setRecruitConfig] = useState<{ rates: RecruitRate[]; pool: Record<string, string[]> } | null>(null);
+  const [testCoinsAdded, setTestCoinsAdded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const commentaryScrollRef = useRef<HTMLDivElement>(null);
   const matchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -794,11 +796,39 @@ export default function App() {
               <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">Dota Manager Tycoon v1.0</p>
             </div>
           </div>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
             <div className="flex flex-col items-end">
               <span className="text-[10px] text-zinc-500 uppercase font-bold">Kukuy Coins</span>
               <span className="text-emerald-400 font-mono text-xl font-bold">{state.coins.toLocaleString()}</span>
             </div>
+            <button
+              type="button"
+              onClick={async () => {
+                setTestCoinsAdded(false);
+                const url = `${window.location.origin}/api/add-test-coins`;
+                try {
+                  const res = await fetch(url, { method: 'POST', credentials: 'same-origin' });
+                  if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    console.error('Add test coins failed:', res.status, err);
+                    await fetchData();
+                    return;
+                  }
+                  const data = await res.json();
+                  if (data?.state) setState(data.state);
+                  else await fetchData();
+                  setTestCoinsAdded(true);
+                  setTimeout(() => setTestCoinsAdded(false), 1500);
+                } catch (e) {
+                  console.error('Add test coins error:', e);
+                  await fetchData();
+                }
+              }}
+              className="px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 text-xs font-bold uppercase tracking-wider border border-amber-500/40 active:scale-95 transition-transform disabled:opacity-70"
+              title="Add 10,000 coins for testing"
+            >
+              {testCoinsAdded ? 'Added!' : '+10k'}
+            </button>
           </div>
         </div>
       </header>
@@ -1047,11 +1077,11 @@ export default function App() {
                             <span className={`font-bold text-sm truncate shrink-0 ${style.bandText}`}>{player.team || 'KUKUYS'}</span>
                           </div>
 
-                          {/* Middle: FANTASY POSITION + radar — no separator line */}
+                          {/* Middle: Dota 2 role + radar */}
                           <div className={`absolute left-0 right-0 top-[calc(42%+60px)] bottom-[26%] ${style.statsPanel} px-3 py-2.5 flex items-center gap-3`}>
                             <div className="shrink-0">
-                              <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-1">Fantasy position</p>
-                              <p className="font-bold text-sm text-white uppercase leading-tight">{player.tier}</p>
+                              <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-1">Role</p>
+                              <p className="font-bold text-sm text-white uppercase leading-tight">{player.role || player.tier}</p>
                             </div>
                             <div className="ml-auto w-20 h-20 shrink-0 flex items-center justify-center pr-0">
                               <StatRadar mechanics={player.mechanics} drafting={player.drafting} mental_strength={player.mental_strength} trashtalk={player.trashtalk} tier={player.tier} />

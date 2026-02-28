@@ -82,6 +82,23 @@ try {
     db.exec("ALTER TABLE players ADD COLUMN sleeping_until INTEGER");
   }
 } catch (_) {}
+try {
+  const cols = db.prepare("PRAGMA table_info(players)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "role")) {
+    db.exec("ALTER TABLE players ADD COLUMN role TEXT");
+  }
+} catch (_) {}
+
+const DOTA2_ROLES = ["Carry", "Mid", "Offlane", "Soft Support", "Hard Support"] as const;
+
+// Backfill role for existing players
+try {
+  const needsRole = db.prepare("SELECT id FROM players WHERE role IS NULL OR role = ''").all() as { id: string }[];
+  const stmt = db.prepare("UPDATE players SET role = ? WHERE id = ?");
+  for (const p of needsRole) {
+    stmt.run(DOTA2_ROLES[Math.floor(Math.random() * DOTA2_ROLES.length)], p.id);
+  }
+} catch (_) {}
 
 const GRIND_DURATION_MS = 5 * 60 * 1000; // 5 minutes, cannot interrupt
 const SLEEP_DURATION_MS = 5 * 60 * 1000; // 5 minutes, cannot interrupt
@@ -115,6 +132,7 @@ function resolveExpiredSleeps(): void {
 const LIQUIPEDIA_API = "https://liquipedia.net/dota2/api.php";
 const imageCache = new Map<string, { url: string; expiry: number }>();
 const teamCache = new Map<string, { team: string; expiry: number }>();
+const roleCache = new Map<string, { role: string; expiry: number }>();
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Liquipedia MediaWiki API: max 1 req/2s general, 1 req/30s for action=parse. See https://liquipedia.net/api-terms-of-use
@@ -339,6 +357,59 @@ async function getLiquipediaPlayerTeam(name: string): Promise<string | null> {
   return "Kukuys";
 }
 
+/** Map Liquipedia role string to our DOTA2_ROLES. Returns null if not mappable (e.g. Coach). Check order matters: offlane before support. */
+function mapLiquipediaRoleToOurs(raw: string): string | null {
+  let s = raw.toLowerCase().replace(/[\[\]{}]/g, "").trim();
+  // {{RoleIcon|Offlaner}} → take part after last |
+  if (s.includes("|")) s = s.split("|").pop()?.trim() ?? s;
+  if (/^coach$/i.test(s)) return null;
+  // Offlane/Offlaner before generic "support" (e.g. "Offlaner/Carry" must map to Offlane)
+  if (/\bofflane|\bofflaner|position\s*3|pos\s*3|pos3/i.test(s)) return "Offlane";
+  if (/\bcarry|position\s*1|pos\s*1|pos1|hard\s*carry/i.test(s)) return "Carry";
+  if (/\bmid|\bmiddle|position\s*2|pos\s*2|pos2/i.test(s)) return "Mid";
+  if (/soft\s*support|position\s*4|pos\s*4|pos4/i.test(s)) return "Soft Support";
+  if (/hard\s*support|position\s*5|pos\s*5|pos5|\bsupport\b/i.test(s)) return "Hard Support";
+  return null;
+}
+
+async function getLiquipediaPlayerRole(name: string): Promise<string | null> {
+  const cached = roleCache.get(name);
+  if (cached && cached.expiry > Date.now()) return cached.role;
+
+  const pageTitle = name.replace(/ /g, "_");
+
+  try {
+    const data = await fetchLiquipediaJson(
+      `${LIQUIPEDIA_API}?action=query&titles=${encodeURIComponent(pageTitle)}&prop=revisions&rvprop=content&rvslots=main&format=json&origin=*&redirects=1`,
+      false
+    ) as { query?: { pages?: Record<string, { revisions?: { slots?: { main?: { "*"?: string } } }[] }> } } | null;
+    if (data?.query?.pages) {
+      const pages = data.query.pages;
+      const page = Object.values(pages)[0] as { revisions?: { slots?: { main?: { "*"?: string } } }[] };
+      const wikitext = page?.revisions?.[0]?.slots?.main?.["*"];
+      if (wikitext && typeof wikitext === "string") {
+        // |role= or |roles= — [[Offlaner]]/[[Carry]], [[Offlaner]] [[Carry]], or plain text
+        const roleLine = wikitext.match(/\|roles?\s*=\s*(.+?)(?:\n\||$)/is);
+        if (roleLine && roleLine[1]) {
+          const raw = roleLine[1].trim();
+          // Extract first role from [[Offlaner]]/[[Carry]] or [[Offlaner]] [[Carry]] or [[Offlaner]]
+          const firstLink = raw.match(/\[\[([^\]|]+)\]\]/);
+          const firstRole = firstLink ? firstLink[1] : raw.split(/[\/\[\]]/)[0]?.trim() || raw;
+          const mapped = mapLiquipediaRoleToOurs(firstRole);
+          if (mapped) {
+            roleCache.set(name, { role: mapped, expiry: Date.now() + CACHE_TTL_MS });
+            return mapped;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Liquipedia role fetch failed for", name, (e instanceof Error ? e.message : String(e)));
+  }
+
+  return null;
+}
+
 const app = express();
 app.use(express.json());
 
@@ -382,6 +453,15 @@ app.get("/api/state", (req, res) => {
   res.json({ state, players });
   // Do not run backfill here — it triggers many Liquipedia requests and can get the IP blocked. Use LOAD PHOTOS / REFRESH TEAMS or wait for scheduled backfill.
 });
+
+function addTestCoins(req: any, res: any) {
+  const amount = 10000;
+  db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(amount);
+  const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
+  res.json({ success: true, state, added: amount });
+}
+app.post("/api/add-test-coins", addTestCoins);
+app.get("/api/add-test-coins", addTestCoins);
 
 app.get("/api/refresh-player-image", async (req, res) => {
   const playerId = req.query.playerId as string;
@@ -499,26 +579,31 @@ app.post("/api/recruit", async (req, res) => {
     trashtalk: Math.floor(Math.random() * 100),
   };
 
+  const role = DOTA2_ROLES[Math.floor(Math.random() * DOTA2_ROLES.length)];
+
   db.prepare(`
-    INSERT INTO players (id, name, tier, drafting, mechanics, mental_strength, leadership, trashtalk, image_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, name, tier, stats.drafting, stats.mechanics, stats.mental_strength, stats.leadership, stats.trashtalk, null);
+    INSERT INTO players (id, name, tier, role, drafting, mechanics, mental_strength, leadership, trashtalk, image_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, name, tier, role, stats.drafting, stats.mechanics, stats.mental_strength, stats.leadership, stats.trashtalk, null);
 
   db.prepare("UPDATE game_state SET coins = coins - 200 WHERE id = 1").run();
 
-  const [imageUrl, team] = await Promise.all([
-    getLiquipediaPlayerImage(name),
-    getLiquipediaPlayerTeam(name),
-  ]);
-  if (imageUrl) {
-    db.prepare("UPDATE players SET image_url = ? WHERE id = ?").run(imageUrl, id);
-  }
-  if (team != null) {
-    db.prepare("UPDATE players SET team = ? WHERE id = ?").run(team, id);
-  }
-
   const playerRow = db.prepare("SELECT * FROM players WHERE id = ?").get(id) as any;
-  res.json({ player: playerRow ? { ...playerRow, energy: 100 } : { id, name, tier, ...stats, energy: 100, image_url: imageUrl } });
+  res.json({ player: playerRow ? { ...playerRow, energy: 100 } : { id, name, tier, role, ...stats, energy: 100 } });
+
+  // Liquipedia fetches in background — no blocking; client refreshes via fetchData
+  (async () => {
+    try {
+      const [liquipediaRole, imageUrl, team] = await Promise.all([
+        getLiquipediaPlayerRole(name),
+        getLiquipediaPlayerImage(name),
+        getLiquipediaPlayerTeam(name),
+      ]);
+      if (liquipediaRole) db.prepare("UPDATE players SET role = ? WHERE id = ?").run(liquipediaRole, id);
+      if (imageUrl) db.prepare("UPDATE players SET image_url = ? WHERE id = ?").run(imageUrl, id);
+      if (team != null) db.prepare("UPDATE players SET team = ? WHERE id = ?").run(team, id);
+    } catch (_) {}
+  })();
 });
 
 const SLOT_EXPAND_COST = 10000;
@@ -761,6 +846,27 @@ function simulateBO3(
   return { winner, winnerRating, team1Odds, team2Odds, mapResults };
 }
 
+/** BO5: first to 3 map wins. Used for Grand Final only. */
+function simulateBO5(
+  t1: { name: string; rating: number },
+  t2: { name: string; rating: number }
+): { winner: string; winnerRating: number; team1Odds: number; team2Odds: number; mapResults: string[] } {
+  const r1 = Math.max(1, t1.rating);
+  const r2 = Math.max(1, t2.rating);
+  const team1Odds = Math.round((r1 / (r1 + r2)) * 100);
+  const team2Odds = 100 - team1Odds;
+  const mapResults: string[] = [];
+  let wins1 = 0, wins2 = 0;
+  while (wins1 < 3 && wins2 < 3) {
+    const mapWinner = simulateMap(t1, t2);
+    mapResults.push(mapWinner);
+    if (mapWinner === t1.name) wins1++; else wins2++;
+  }
+  const winner = wins1 >= 3 ? t1.name : t2.name;
+  const winnerRating = winner === t1.name ? r1 : r2;
+  return { winner, winnerRating, team1Odds, team2Odds, mapResults };
+}
+
 interface BracketMatchResult {
   team1: string;
   team2: string;
@@ -876,18 +982,13 @@ app.post("/api/tournament-run", (req, res) => {
     matches: [{ team1: ubFinalLoser.name, team2: lbWinner.name, winner: gfQualifierResult.winner, team1Odds: gfQualifierResult.team1Odds, team2Odds: gfQualifierResult.team2Odds, mapResults: gfQualifierResult.mapResults }],
   });
 
-  // Grand Final: UB winner vs winner of (UB Final loser vs LB winner)
-  const gfResult = simulateBO3(ubWinner, gfOpponent);
-  let champion = gfResult.winner;
-  const grandFinalMatches: BracketMatchResult[] = [{ team1: ubWinner.name, team2: gfOpponent.name, winner: champion, team1Odds: gfResult.team1Odds, team2Odds: gfResult.team2Odds, mapResults: gfResult.mapResults }];
-
-  // Bracket reset if LB side won Grand Final (they must win one more)
-  if (champion === gfOpponent.name && gfOpponent.name === lbWinner.name) {
-    const resetResult = simulateBO3(ubWinner, lbWinner);
-    champion = resetResult.winner;
-    grandFinalMatches.push({ team1: ubWinner.name, team2: lbWinner.name, winner: champion, team1Odds: resetResult.team1Odds, team2Odds: resetResult.team2Odds, mapResults: resetResult.mapResults });
-  }
-  rounds.push({ round: "Grand Final", matches: grandFinalMatches });
+  // Grand Final: UB winner vs winner of (UB Final loser vs LB winner). BO5, single match — loser loses.
+  const gfResult = simulateBO5(ubWinner, gfOpponent);
+  const champion = gfResult.winner;
+  rounds.push({
+    round: "Grand Final",
+    matches: [{ team1: ubWinner.name, team2: gfOpponent.name, winner: champion, team1Odds: gfResult.team1Odds, team2Odds: gfResult.team2Odds, mapResults: gfResult.mapResults }],
+  });
 
   let coinsAwarded = 0;
   if (champion === KUKUYS_TEAM) {
