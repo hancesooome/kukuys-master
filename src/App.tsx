@@ -61,43 +61,8 @@ interface TournamentResult {
   state: GameState;
 }
 
-const SLOT_H = 88;
-const SLOT_GAP = 12;
-const SLOT_STEP = SLOT_H + SLOT_GAP;
-
 /** In production (e.g. Vercel), set VITE_API_URL to your backend (e.g. https://your-app.railway.app) so /api calls reach the server. */
 const API_BASE = (import.meta.env.VITE_API_URL as string) ?? '';
-
-function BracketConnector({ prevCount, nextCount, colHeight }: { prevCount: number; nextCount: number; colHeight: number }) {
-  const w = 32;
-  const slotsPerGroup = prevCount / nextCount;
-  const paths: string[] = [];
-  for (let p = 0; p < nextCount; p++) {
-    const i0 = p * slotsPerGroup;
-    const i1 = i0 + slotsPerGroup - 1;
-    const c0 = i0 * SLOT_STEP + SLOT_H / 2;
-    const c1 = i1 * SLOT_STEP + SLOT_H / 2;
-    const mergeY = (c0 + c1) / 2;
-    const nextCenter = (p + 0.5) * (colHeight / nextCount);
-    if (slotsPerGroup === 1) {
-      paths.push(`M 0 ${c0} L ${w} ${nextCenter}`);
-    } else {
-      paths.push(`M 0 ${c0} L ${w / 2} ${c0}`);
-      paths.push(`M 0 ${c1} L ${w / 2} ${c1}`);
-      paths.push(`M ${w / 2} ${c0} L ${w / 2} ${c1}`);
-      paths.push(`M ${w / 2} ${mergeY} L ${w} ${nextCenter}`);
-    }
-  }
-  return (
-    <svg width={w} height={colHeight} className="flex-shrink-0 text-zinc-600" aria-hidden>
-      <g stroke="currentColor" strokeWidth="1" fill="none">
-        {paths.map((d, i) => (
-          <path key={i} d={d} />
-        ))}
-      </g>
-    </svg>
-  );
-}
 
 function BracketMatchCard({
   m,
@@ -1226,129 +1191,32 @@ export default function App() {
 
                   {bracketResult && (
                     <div className="space-y-6">
-                    <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
-                      <div className="flex-1 flex flex-col gap-8 min-w-0">
-                        <div>
-                          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3">Upper Bracket</h3>
-                          <div className="flex items-stretch gap-1 overflow-x-auto pb-2">
-                            {[0, 1, 5].map((roundIdx, colIdx) => {
-                              const r = bracketResult.rounds[roundIdx];
-                              if (!r) return null;
-                              const roundStartIndex = bracketResult.rounds.slice(0, roundIdx).reduce((acc, x) => acc + x.matches.length, 0);
-                              const prevCount = colIdx === 0 ? 4 : colIdx === 1 ? 2 : 1;
-                              const nextCount = colIdx === 0 ? 2 : colIdx === 1 ? 1 : 0;
-                              const colHeight = 4 * SLOT_STEP - SLOT_GAP;
-                              return (
-                                <React.Fragment key={roundIdx}>
-                                  {colIdx > 0 && nextCount > 0 && (
-                                    <BracketConnector prevCount={prevCount} nextCount={nextCount} colHeight={colHeight} />
-                                  )}
-                                  <div className="flex flex-col gap-3 min-w-[200px] flex-shrink-0" style={{ minHeight: colHeight }}>
-                                    <p className="text-[10px] text-zinc-500 uppercase tracking-wider">{r.round.replace('Upper Bracket — ', '')}</p>
-                                    <div className="flex flex-col gap-3 justify-around flex-1" style={{ minHeight: r.matches.length * SLOT_STEP - SLOT_GAP }}>
-                                      {r.matches.map((m, matchIdx) => {
-                                        const matchIndex = roundStartIndex + matchIdx;
-                                        const isRevealed = matchIndex < bracketRevealIndex;
-                                        const isSimulating = matchIndex === bracketRevealIndex;
-                                        if (!isRevealed && !isSimulating) return <div key={matchIdx} className="rounded-xl border border-zinc-800 bg-zinc-900/50 flex-shrink-0" style={{ minHeight: SLOT_H }} />;
-                                        return (
-                                          <div key={matchIdx} className="flex-shrink-0" style={{ minHeight: SLOT_H }}>
-                                            <BracketMatchCard
-                                              m={m}
-                                              isRevealed={isRevealed}
-                                              isSimulating={isSimulating}
-                                              isKukuysMatch={isKukuysMatch}
-                                              kukuysMatchStarted={kukuysMatchStarted}
-                                              onStartGame={() => setKukuysMatchStarted(true)}
-                                              commentaryLines={commentaryLines}
-                                              commentaryRevealIndex={commentaryRevealIndex}
-                                              commentaryScrollRef={commentaryScrollRef}
-                                            />
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                </React.Fragment>
-                              );
-                            })}
+                    <div className="flex flex-col gap-3 max-w-md mx-auto">
+                      {allBracketMatches.map((m, matchIndex) => {
+                        const isRevealed = matchIndex < bracketRevealIndex;
+                        const isSimulating = matchIndex === bracketRevealIndex;
+                        if (!isRevealed && !isSimulating) return (
+                          <div key={matchIndex} className="rounded-xl border border-zinc-800 bg-zinc-900/50 py-4 px-3 flex items-center justify-center">
+                            <span className="text-zinc-600 text-sm">Match {matchIndex + 1}</span>
                           </div>
-                        </div>
-                        <div>
-                          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3">Lower Bracket</h3>
-                          <div className="flex items-stretch gap-1 overflow-x-auto pb-2">
-                            {[2, 3, 4, 6].map((roundIdx, colIdx) => {
-                              const r = bracketResult.rounds[roundIdx];
-                              if (!r) return null;
-                              const roundStartIndex = bracketResult.rounds.slice(0, roundIdx).reduce((acc, x) => acc + x.matches.length, 0);
-                              const prevCount = colIdx === 0 ? 2 : colIdx === 1 ? 2 : colIdx === 2 ? 1 : 1;
-                              const nextCount = colIdx === 0 ? 2 : colIdx === 1 ? 1 : colIdx === 2 ? 1 : 0;
-                              const colHeight = 2 * SLOT_STEP - SLOT_GAP;
-                              return (
-                                <React.Fragment key={roundIdx}>
-                                  {colIdx > 0 && nextCount > 0 && (
-                                    <BracketConnector prevCount={prevCount} nextCount={nextCount} colHeight={colHeight} />
-                                  )}
-                                  <div className="flex flex-col gap-3 min-w-[200px] flex-shrink-0" style={{ minHeight: colHeight }}>
-                                    <p className="text-[10px] text-zinc-500 uppercase tracking-wider">{r.round.replace('Lower Bracket — ', '')}</p>
-                                    <div className="flex flex-col gap-3 justify-around flex-1" style={{ minHeight: r.matches.length * SLOT_STEP - SLOT_GAP }}>
-                                      {r.matches.map((m, matchIdx) => {
-                                        const matchIndex = roundStartIndex + matchIdx;
-                                        const isRevealed = matchIndex < bracketRevealIndex;
-                                        const isSimulating = matchIndex === bracketRevealIndex;
-                                        if (!isRevealed && !isSimulating) return <div key={matchIdx} className="rounded-xl border border-zinc-800 bg-zinc-900/50 flex-shrink-0" style={{ minHeight: SLOT_H }} />;
-                                        return (
-                                          <div key={matchIdx} className="flex-shrink-0" style={{ minHeight: SLOT_H }}>
-                                            <BracketMatchCard
-                                              m={m}
-                                              isRevealed={isRevealed}
-                                              isSimulating={isSimulating}
-                                              isKukuysMatch={isKukuysMatch}
-                                              kukuysMatchStarted={kukuysMatchStarted}
-                                              onStartGame={() => setKukuysMatchStarted(true)}
-                                              commentaryLines={commentaryLines}
-                                              commentaryRevealIndex={commentaryRevealIndex}
-                                              commentaryScrollRef={commentaryScrollRef}
-                                            />
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                </React.Fragment>
-                              );
-                            })}
+                        );
+                        return (
+                          <div key={matchIndex} className="space-y-1">
+                            <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Match {matchIndex + 1}</p>
+                            <BracketMatchCard
+                              m={m}
+                              isRevealed={isRevealed}
+                              isSimulating={isSimulating}
+                              isKukuysMatch={isKukuysMatch}
+                              kukuysMatchStarted={kukuysMatchStarted}
+                              onStartGame={() => setKukuysMatchStarted(true)}
+                              commentaryLines={commentaryLines}
+                              commentaryRevealIndex={commentaryRevealIndex}
+                              commentaryScrollRef={commentaryScrollRef}
+                            />
                           </div>
-                        </div>
-                      </div>
-                      {bracketResult.rounds[7] && (
-                        <div className="lg:flex-shrink-0 lg:w-[220px] lg:flex lg:flex-col lg:justify-center">
-                          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3">Grand Final</h3>
-                          <div className="flex flex-col gap-3 min-w-[200px]">
-                            {bracketResult.rounds[7].matches.map((m, matchIdx) => {
-                                  const roundStartIndex = bracketResult.rounds.slice(0, 7).reduce((acc, x) => acc + x.matches.length, 0);
-                                  const matchIndex = roundStartIndex + matchIdx;
-                                  const isRevealed = matchIndex < bracketRevealIndex;
-                                  const isSimulating = matchIndex === bracketRevealIndex;
-                                  if (!isRevealed && !isSimulating) return <div key={matchIdx} className="rounded-xl border border-zinc-800 bg-zinc-900/50 h-16" />;
-                                  return (
-                                    <BracketMatchCard
-                                      key={matchIdx}
-                                      m={m}
-                                      isRevealed={isRevealed}
-                                      isSimulating={isSimulating}
-                                      isKukuysMatch={isKukuysMatch}
-                                      kukuysMatchStarted={kukuysMatchStarted}
-                                      onStartGame={() => setKukuysMatchStarted(true)}
-                                      commentaryLines={commentaryLines}
-                                      commentaryRevealIndex={commentaryRevealIndex}
-                                      commentaryScrollRef={commentaryScrollRef}
-                                    />
-                                  );
-                                })}
-                          </div>
-                        </div>
-                      )}
+                        );
+                      })}
                     </div>
                     {bracketRevealIndex >= totalBracketMatches && (
                         <motion.div
