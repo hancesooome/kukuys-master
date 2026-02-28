@@ -578,9 +578,15 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/state`);
+      const url = `${API_BASE}/api/state`;
+      const res = await fetch(url);
+      const ct = res.headers.get('content-type') || '';
       if (!res.ok) {
-        setApiError(`Server returned ${res.status}. Check that the backend is running and VITE_API_URL is set correctly.`);
+        setApiError(`Backend returned ${res.status}. Check Railway is running and VITE_API_URL is correct.`);
+        return;
+      }
+      if (!ct.includes('application/json')) {
+        setApiError('Backend returned HTML instead of JSON. Is VITE_API_URL correct? It must be your Railway URL (no trailing slash).');
         return;
       }
       const data = await res.json();
