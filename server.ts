@@ -1026,6 +1026,8 @@ setInterval(() => {
   db.prepare("UPDATE players SET energy = MAX(0, energy - 2) WHERE is_streaming = 1").run();
 }, 10000); // Every 10 seconds
 
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1034,16 +1036,21 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, "dist")));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(__dirname, "dist", "index.html"));
-    });
+    const distPath = path.join(__dirname, "dist");
+    const fs = await import("fs");
+    if (fs.existsSync(path.join(distPath, "index.html"))) {
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found" });
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
   }
 
   const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    // Single delayed backfill so we don't burst on startup; rate limiter will space all Liquipedia requests.
+    console.log(`NODE_ENV=${process.env.NODE_ENV}, PORT=${PORT}`);
     setTimeout(backfillPlayerPhotos, 5000);
     setTimeout(backfillPlayerTeams, 60000);
   });
