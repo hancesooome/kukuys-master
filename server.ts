@@ -1025,14 +1025,15 @@ app.post("/api/tournament-run", (req, res) => {
 
 // Passive Income (Simplified for MVP)
 setInterval(() => {
-  const streamingPlayers = db.prepare("SELECT COUNT(*) as count FROM players WHERE is_streaming = 1").get() as any;
-  const income = streamingPlayers.count * 10;
-  if (income > 0) {
-    db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(income);
-  }
-  // Energy drain for streaming
-  db.prepare("UPDATE players SET energy = MAX(0, energy - 2) WHERE is_streaming = 1").run();
-}, 10000); // Every 10 seconds
+  try {
+    const streamingPlayers = db.prepare("SELECT COUNT(*) as count FROM players WHERE is_streaming = 1").get() as any;
+    const income = streamingPlayers.count * 10;
+    if (income > 0) {
+      db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(income);
+    }
+    db.prepare("UPDATE players SET energy = MAX(0, energy - 2) WHERE is_streaming = 1").run();
+  } catch (e) { console.error("Passive income error:", e); }
+}, 10000);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
@@ -1059,8 +1060,9 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`NODE_ENV=${process.env.NODE_ENV}, PORT=${PORT}`);
-    setTimeout(backfillPlayerPhotos, 5000);
-    setTimeout(backfillPlayerTeams, 60000);
+    // Backfill disabled on Railway to avoid crashes; use LOAD PHOTOS / REFRESH TEAMS buttons instead.
+    // setTimeout(backfillPlayerPhotos, 5000);
+    // setTimeout(backfillPlayerTeams, 60000);
   });
 }
 
