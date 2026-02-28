@@ -435,7 +435,7 @@ function StatRadar({ mechanics, drafting, mental_strength, trashtalk, tier }: { 
     pt(270, trashtalk),
   ].join(' ');
   const axisLabels = [
-    { a: 0, label: 'M', x: cx, y: 6, anchor: 'middle' as const },
+    { a: 0, label: 'S', x: cx, y: 6, anchor: 'middle' as const },
     { a: 90, label: 'D', x: size - 4, y: cy, anchor: 'end' as const },
     { a: 180, label: 'Ms', x: cx, y: size - 4, anchor: 'middle' as const },
     { a: 270, label: 'T', x: 4, y: cy, anchor: 'end' as const },
@@ -468,6 +468,7 @@ function StatRadar({ mechanics, drafting, mental_strength, trashtalk, tier }: { 
 export default function App() {
   const [state, setState] = useState<GameState | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
+  const [sortMode, setSortMode] = useState<'newest' | 'oldest' | 'rarity' | 'best' | 'worst'>('newest');
   const [activeTab, setActiveTab] = useState<'bootcamp' | 'roster' | 'shop' | 'match' | 'rates'>('bootcamp');
   const [matchLog, setMatchLog] = useState<string[]>([]);
   const [isMatching, setIsMatching] = useState(false);
@@ -486,11 +487,19 @@ export default function App() {
   const matchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const refreshedIdsRef = useRef<Set<string>>(new Set());
   const [grindTick, setGrindTick] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
 
   useEffect(() => {
     const id = setInterval(() => setGrindTick((n) => n + 1), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   useEffect(() => {
     const hasExpiredGrind = players.some(p => p.grinding_until != null && p.grinding_until <= Date.now());
@@ -504,6 +513,24 @@ export default function App() {
   const currentBracketMatch = allBracketMatches[bracketRevealIndex];
   const isKukuysMatch = currentBracketMatch && (currentBracketMatch.team1 === 'Kukuys' || currentBracketMatch.team2 === 'Kukuys');
   const roster = players.filter((p) => p.is_roster === 1);
+
+  const TIER_ORDER: Record<string, number> = { Mythic: 0, Legendary: 1, Epic: 2, Rare: 3, Common: 4 };
+  // Power = 25% each: Skills, Drafting, Mental, Leadership (normalized 0–100)
+  const powerScore = (p: Player) => {
+    const s = Math.min(100, p.mechanics ?? 0);
+    const d = Math.min(100, p.drafting ?? 0);
+    const m = Math.min(100, p.mental_strength ?? 0);
+    const l = Math.min(100, p.leadership ?? 0);
+    return (s + d + m + l) / 4;
+  };
+  const sortedPlayers = [...players].sort((a, b) => {
+    if (sortMode === 'rarity') return (TIER_ORDER[a.tier] ?? 5) - (TIER_ORDER[b.tier] ?? 5);
+    if (sortMode === 'best') return powerScore(b) - powerScore(a);
+    if (sortMode === 'worst') return powerScore(a) - powerScore(b);
+    const tsA = parseInt(a.id.split('_').pop() || '0', 10);
+    const tsB = parseInt(b.id.split('_').pop() || '0', 10);
+    return sortMode === 'newest' ? tsB - tsA : tsA - tsB;
+  });
 
   useEffect(() => {
     if (!bracketResult || bracketRevealIndex >= totalBracketMatches) return;
@@ -660,7 +687,7 @@ export default function App() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      alert(data.error || `Action failed (${res.status})`);
+      setToast(data.error || `Action failed (${res.status})`);
       return;
     }
     const data = await res.json().catch(() => ({}));
@@ -669,27 +696,38 @@ export default function App() {
     if (data.players == null) fetchData();
   };
 
+  const collectionGridRef = useRef<HTMLDivElement>(null);
   const handleRecruit = async () => {
     const res = await fetch(`${API_BASE}/api/recruit`, { method: 'POST' });
     if (res.ok) {
+      const data = await res.json();
+      if (data.player) {
+        setPlayers((prev) => [data.player, ...prev]);
+        if (data.player.id) setState((s) => s ? { ...s, coins: s.coins - 200 } : s);
+      }
       fetchData();
     } else {
       const data = await res.json();
-      alert(data.error);
+      setToast(data.error);
     }
   };
 
-  const handleResetCollection = async () => {
-    if (!confirm('Remove ALL players and reset coins/slots? You will only be able to recruit from the Player pool (per tier) above.')) return;
-    const res = await fetch(`${API_BASE}/api/reset-collection`, { method: 'POST' });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.state != null) setState(data.state);
-      if (Array.isArray(data.players)) setPlayers(data.players);
-    } else {
-      const data = await res.json();
-      alert(data.error || 'Reset failed');
-    }
+  const handleResetCollection = () => {
+    setConfirmDialog({
+      message: 'Remove ALL players and reset coins/slots? You will only be able to recruit from the Player pool (per tier) above.',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        const res = await fetch(`${API_BASE}/api/reset-collection`, { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.state != null) setState(data.state);
+          if (Array.isArray(data.players)) setPlayers(data.players);
+        } else {
+          const data = await res.json();
+          setToast(data.error || 'Reset failed');
+        }
+      },
+    });
   };
 
   const handleExpandCollection = async () => {
@@ -698,78 +736,54 @@ export default function App() {
       fetchData();
     } else {
       const data = await res.json();
-      alert(data.error);
+      setToast(data.error);
     }
   };
 
-  const [loadingPhotos, setLoadingPhotos] = useState(false);
-  const handleLoadPhotos = async () => {
-    setLoadingPhotos(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/backfill-photos`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success && Array.isArray(data.players)) {
-        setPlayers(data.players);
-        const loaded = (data.results || []).filter((r: { ok: boolean }) => r.ok).length;
-        if (loaded > 0) alert(`Loaded ${loaded} player photo(s).`);
-      }
-    } catch (_) {}
-    setLoadingPhotos(false);
-  };
-
-  const [loadingTeams, setLoadingTeams] = useState(false);
-  const handleRefreshTeams = async () => {
-    setLoadingTeams(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/backfill-teams`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success && Array.isArray(data.players)) {
-        setPlayers(data.players);
-        alert('Teams refreshed from Liquipedia.');
-      }
-    } catch (_) {}
-    setLoadingTeams(false);
-  };
-
-  const handleRecycle = async (playerId: string, playerName: string) => {
-    if (!confirm(`Recycle ${playerName}? You'll get 10 coins and remove them from your collection.`)) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/action`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playerId, action: 'recycle' }),
-      });
-      const text = await res.text();
-      let data: { success?: boolean; state?: GameState; players?: Player[]; error?: string };
-      try {
-        data = text ? JSON.parse(text) : {};
-      } catch {
-        alert(`Recycle failed: server returned invalid response (${res.status})`);
+  const handleRecycle = (playerId: string, playerName: string) => {
+    setConfirmDialog({
+      message: `Recycle ${playerName}? You'll get 10 coins and remove them from your collection.`,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          const res = await fetch(`${API_BASE}/api/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ playerId, action: 'recycle' }),
+          });
+          const text = await res.text();
+          let data: { success?: boolean; state?: GameState; players?: Player[]; error?: string };
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch {
+            setToast(`Recycle failed: server returned invalid response (${res.status})`);
+            fetchData();
+            return;
+          }
+          if (res.ok && data.success) {
+            if (data.state != null) setState(data.state);
+            if (Array.isArray(data.players)) setPlayers(data.players);
+          } else {
+            setToast(data.error || `Recycle failed (${res.status})`);
+          }
+        } catch (err) {
+          console.error(err);
+          setToast('Recycle failed: ' + (err instanceof Error ? err.message : 'network error'));
+        }
         fetchData();
-        return;
-      }
-      if (res.ok && data.success) {
-        if (data.state != null) setState(data.state);
-        if (Array.isArray(data.players)) setPlayers(data.players);
-      } else {
-        alert(data.error || `Recycle failed (${res.status})`);
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Recycle failed: ' + (err instanceof Error ? err.message : 'network error'));
-    }
-    fetchData();
+      },
+    });
   };
 
   const startMatch = async () => {
     const roster = players.filter(p => p.is_roster === 1);
     if (roster.length < 5) {
-      alert("You need 5 players in your roster to start a match!");
+      setToast("You need 5 players in your roster to start a match!");
       return;
     }
     const someoneGrinding = roster.some(p => (p.grinding_until ?? 0) > Date.now());
     if (someoneGrinding) {
-      alert("Someone is still grinding. Wait until all grind sessions finish before entering a tournament.");
+      setToast("Someone is still grinding. Wait until all grind sessions finish before entering a tournament.");
       return;
     }
     setIsMatching(true);
@@ -780,7 +794,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/tournament-run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || 'Failed to run tournament');
+        setToast(data.error || 'Failed to run tournament');
         setIsMatching(false);
         return;
       }
@@ -792,7 +806,7 @@ export default function App() {
       setCommentaryRevealIndex(0);
       fetchData();
     } catch (e) {
-      alert('Tournament failed: ' + (e instanceof Error ? e.message : 'network error'));
+      setToast('Tournament failed: ' + (e instanceof Error ? e.message : 'network error'));
     }
     setIsMatching(false);
   };
@@ -1028,26 +1042,23 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-6"
               >
-                <div className="flex justify-between items-center">
+                <div className="flex flex-wrap justify-between items-center gap-3">
                   <h2 className="text-xl font-bold text-white uppercase tracking-tight">Your Collection</h2>
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
                     <span className="text-zinc-500 text-sm font-mono">
                       {players.length}/{state?.collection_slots ?? 8}
                     </span>
-                    <button 
-                      onClick={handleLoadPhotos}
-                      disabled={loadingPhotos || players.length === 0}
-                      className="flex items-center gap-2 px-4 py-2.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded-xl text-sm font-bold disabled:opacity-50"
-                    >
-                      {loadingPhotos ? 'Loading…' : 'LOAD PHOTOS'}
-                    </button>
-                    <button 
-                      onClick={handleRefreshTeams}
-                      disabled={loadingTeams || players.length === 0}
-                      className="flex items-center gap-2 px-4 py-2.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded-xl text-sm font-bold disabled:opacity-50"
-                    >
-                      {loadingTeams ? 'Loading…' : 'REFRESH TEAMS'}
-                    </button>
+                    <div className="flex items-center rounded-lg border border-zinc-700 overflow-hidden text-xs font-bold">
+                      {(['newest', 'oldest', 'rarity', 'best', 'worst'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          onClick={() => setSortMode(mode)}
+                          className={`px-3 py-1.5 uppercase transition-colors ${sortMode === mode ? 'bg-zinc-600 text-white' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'}`}
+                        >
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
                     <button 
                       onClick={handleRecruit}
                       disabled={!state || players.length >= (state.collection_slots ?? 8)}
@@ -1070,8 +1081,8 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {players.map(player => {
+                <div ref={collectionGridRef} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {sortedPlayers.map(player => {
                     const style = TIER_CARD_STYLES[player.tier] ?? TIER_CARD_STYLES.Common;
                     return (
                       <motion.div
@@ -1122,7 +1133,7 @@ export default function App() {
                           <div className={`absolute left-0 right-0 bottom-0 top-[74%] ${style.statsPanel} px-3 pt-3 pb-3 flex flex-col`}>
                             <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Card stats</p>
                             <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm text-zinc-200 mb-3">
-                              <div className="flex justify-between gap-2"><span className="truncate">Mechanics</span><span className={`font-mono font-bold shrink-0 ${style.accentStat}`}>{player.mechanics}</span></div>
+                              <div className="flex justify-between gap-2"><span className="truncate">Skills</span><span className={`font-mono font-bold shrink-0 ${style.accentStat}`}>{player.mechanics}</span></div>
                               <div className="flex justify-between gap-2"><span className="truncate">Drafting</span><span className={`font-mono font-bold shrink-0 ${style.accentStat}`}>{player.drafting}</span></div>
                               <div className="flex justify-between gap-2"><span className="truncate">Mental</span><span className={`font-mono font-bold shrink-0 ${style.accentStat}`}>{player.mental_strength}</span></div>
                               <div className="flex justify-between gap-2"><span className="truncate">Trashtalk</span><span className={`font-mono font-bold shrink-0 ${style.accentStat}`}>{player.trashtalk}</span></div>
@@ -1130,15 +1141,22 @@ export default function App() {
                             <div className="flex gap-2">
                               {(() => {
                                 const sameNameInRoster = players.some(p => p.is_roster === 1 && p.name === player.name && p.id !== player.id);
-                                const canAddToRoster = !player.is_roster && !sameNameInRoster;
+                                const ROLE_LIMITS: Record<string, number> = { Carry: 1, Midlaner: 1, Offlaner: 1, Support: 2 };
+                                const role = player.role || 'Support';
+                                const limit = ROLE_LIMITS[role] ?? 2;
+                                const currentRoleCount = players.filter(p => p.is_roster === 1 && (p.role || 'Support') === role).length;
+                                const roleFull = currentRoleCount >= limit;
+                                const canAddToRoster = !player.is_roster && !sameNameInRoster && !roleFull;
+                                const disabled = !player.is_roster && (sameNameInRoster || roleFull);
+                                const title = sameNameInRoster ? 'Already in roster (one copy per player)' : roleFull ? `Roster already has ${limit} ${role}(s)` : undefined;
                                 return (
                               <button
                                 onClick={(e) => { e.stopPropagation(); handleAction(player.id, 'toggle_roster'); }}
-                                disabled={!player.is_roster && sameNameInRoster}
-                                title={sameNameInRoster ? 'Already in roster (one copy per player)' : undefined}
-                                className={`flex-1 py-2.5 rounded-lg text-xs font-bold uppercase transition-all ${style.accentButton} ${!canAddToRoster && !player.is_roster ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                disabled={disabled}
+                                title={title}
+                                className={`flex-1 py-2.5 rounded-lg text-xs font-bold uppercase transition-all ${style.accentButton} ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
                               >
-                                {player.is_roster ? '✓ Roster' : sameNameInRoster ? 'In roster' : 'Add to roster'}
+                                {player.is_roster ? '✓ Roster' : sameNameInRoster ? 'In roster' : roleFull ? `${role} slot full` : 'Add to roster'}
                               </button>
                                 );
                               })()}
@@ -1516,6 +1534,62 @@ export default function App() {
         </div>
         <p className="text-[10px] uppercase tracking-widest font-bold">© 2026 KUKUYS MASTER ENTERTAINMENT</p>
       </footer>
+
+      {/* In-page Toast */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-md w-[calc(100%-2rem)]"
+          >
+            <div className="bg-zinc-800 border border-zinc-600 rounded-xl px-4 py-3 flex items-center justify-between gap-4 shadow-xl">
+              <p className="text-sm text-zinc-200">{toast}</p>
+              <button onClick={() => setToast(null)} className="shrink-0 p-1 rounded-lg hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors" aria-label="Dismiss">
+                <X size={18} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* In-page Confirm Dialog */}
+      <AnimatePresence>
+        {confirmDialog && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+            onClick={() => setConfirmDialog(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-zinc-800 border border-zinc-600 rounded-xl p-6 max-w-md w-full shadow-xl"
+            >
+              <p className="text-zinc-200 mb-6">{confirmDialog.message}</p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setConfirmDialog(null)}
+                  className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-zinc-200 font-bold text-sm uppercase"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => confirmDialog.onConfirm()}
+                  className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-sm uppercase"
+                >
+                  Yes
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

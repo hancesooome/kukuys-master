@@ -91,7 +91,7 @@ try {
   }
 } catch (_) {}
 
-const DOTA2_ROLES = ["Carry", "Mid", "Offlane", "Soft Support", "Hard Support"] as const;
+const DOTA2_ROLES = ["Carry", "Midlaner", "Offlaner", "Support"] as const;
 
 // ── Supabase client (reads from player_cache populated by sync-players.ts) ──
 const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY)
@@ -114,6 +114,13 @@ try {
   for (const p of needsRole) {
     stmt.run(DOTA2_ROLES[Math.floor(Math.random() * DOTA2_ROLES.length)], p.id);
   }
+} catch (_) {}
+
+// Migrate Hard Support / Soft Support → Support; Mid → Midlaner; Offlane → Offlaner
+try {
+  db.prepare("UPDATE players SET role = 'Support' WHERE role IN ('Hard Support', 'Soft Support')").run();
+  db.prepare("UPDATE players SET role = 'Midlaner' WHERE role = 'Mid'").run();
+  db.prepare("UPDATE players SET role = 'Offlaner' WHERE role = 'Offlane'").run();
 } catch (_) {}
 
 const GRIND_DURATION_MS = 5 * 60 * 1000; // 5 minutes, cannot interrupt
@@ -414,12 +421,12 @@ function mapLiquipediaRoleToOurs(raw: string): string | null {
   // {{RoleIcon|Offlaner}} → take part after last |
   if (s.includes("|")) s = s.split("|").pop()?.trim() ?? s;
   if (/^coach$/i.test(s)) return null;
-  // Offlane/Offlaner before generic "support" (e.g. "Offlaner/Carry" must map to Offlane)
-  if (/\bofflane|\bofflaner|position\s*3|pos\s*3|pos3/i.test(s)) return "Offlane";
+  // Offlane/Offlaner before generic "support" (e.g. "Offlaner/Carry" must map to Offlaner)
+  if (/\bofflane|\bofflaner|position\s*3|pos\s*3|pos3/i.test(s)) return "Offlaner";
   if (/\bcarry|position\s*1|pos\s*1|pos1|hard\s*carry/i.test(s)) return "Carry";
-  if (/\bmid|\bmiddle|position\s*2|pos\s*2|pos2/i.test(s)) return "Mid";
-  if (/soft\s*support|position\s*4|pos\s*4|pos4/i.test(s)) return "Soft Support";
-  if (/hard\s*support|position\s*5|pos\s*5|pos5|\bsupport\b/i.test(s)) return "Hard Support";
+  if (/\bmid|\bmiddle|position\s*2|pos\s*2|pos2/i.test(s)) return "Midlaner";
+  if (/soft\s*support|position\s*4|pos\s*4|pos4/i.test(s)) return "Support";
+  if (/hard\s*support|position\s*5|pos\s*5|pos5|\bsupport\b/i.test(s)) return "Support";
   return null;
 }
 
@@ -838,6 +845,14 @@ app.post("/api/action", (req, res) => {
       const sameNameInRoster = db.prepare("SELECT id FROM players WHERE is_roster = 1 AND name = ? AND id != ?").get(player.name, playerId) as { id: string } | undefined;
       if (sameNameInRoster) {
         return res.status(400).json({ error: "That player is already in your roster (one copy per player)." });
+      }
+      // Role limits: 1 Carry, 1 Midlaner, 1 Offlaner, 2 Supports
+      const ROLE_LIMITS: Record<string, number> = { Carry: 1, Midlaner: 1, Offlaner: 1, Support: 2 };
+      const role = (player.role as string) || "Support";
+      const limit = ROLE_LIMITS[role] ?? 2;
+      const currentRoleCount = (db.prepare("SELECT COUNT(*) as c FROM players WHERE is_roster = 1 AND role = ?").get(role) as any).c;
+      if (currentRoleCount >= limit) {
+        return res.status(400).json({ error: `Roster already has ${limit} ${role}(s). Max allowed: ${limit}.` });
       }
     }
     db.prepare("UPDATE players SET is_roster = 1 - is_roster WHERE id = ?").run(playerId);

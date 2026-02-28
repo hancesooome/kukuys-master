@@ -149,11 +149,11 @@ function mapRole(raw: string): string | null {
   let s = raw.toLowerCase().replace(/[\[\]{}]/g, "").trim();
   if (s.includes("|")) s = s.split("|").pop()?.trim() ?? s;
   if (/^coach$/i.test(s)) return null;
-  if (/\bofflane|\bofflaner|position\s*3|pos\s*3|pos3/i.test(s)) return "Offlane";
+  if (/\bofflane|\bofflaner|position\s*3|pos\s*3|pos3/i.test(s)) return "Offlaner";
   if (/\bcarry|position\s*1|pos\s*1|pos1|hard\s*carry/i.test(s)) return "Carry";
-  if (/\bmid|\bmiddle|position\s*2|pos\s*2|pos2/i.test(s)) return "Mid";
-  if (/soft\s*support|position\s*4|pos\s*4|pos4/i.test(s)) return "Soft Support";
-  if (/hard\s*support|position\s*5|pos\s*5|pos5|\bsupport\b/i.test(s)) return "Hard Support";
+  if (/\bmid|\bmiddle|position\s*2|pos\s*2|pos2/i.test(s)) return "Midlaner";
+  if (/soft\s*support|position\s*4|pos\s*4|pos4/i.test(s)) return "Support";
+  if (/hard\s*support|position\s*5|pos\s*5|pos5|\bsupport\b/i.test(s)) return "Support";
   return null;
 }
 
@@ -227,7 +227,23 @@ const FALLBACK_TEAMS: Record<string, string> = {
 };
 
 async function main() {
-  console.log(`Syncing ${ALL_PLAYERS.length} players to Supabase...\n`);
+  // Migrate old role values in Supabase player_cache
+  const OLD_ROLES: { newRole: string; oldRoles: string[] }[] = [
+    { newRole: "Offlaner", oldRoles: ["Offlane", "OFFLANE", "offlane"] },
+    { newRole: "Midlaner", oldRoles: ["Mid", "MID", "mid"] },
+    { newRole: "Support", oldRoles: ["Hard Support", "Soft Support", "HARD SUPPORT", "SOFT SUPPORT", "hard support", "soft support"] },
+  ];
+  for (const { newRole, oldRoles } of OLD_ROLES) {
+    const { data, error } = await supabase
+      .from("player_cache")
+      .update({ role: newRole })
+      .in("role", oldRoles)
+      .select("name");
+    if (error) console.warn(`Migration ${newRole}:`, error.message);
+    else if (data?.length) console.log(`Migrated ${data.length} players: ${oldRoles.join("/")} → ${newRole}`);
+  }
+
+  console.log(`\nSyncing ${ALL_PLAYERS.length} players to Supabase...\n`);
 
   for (const name of ALL_PLAYERS) {
     console.log(`[${name}]`);
