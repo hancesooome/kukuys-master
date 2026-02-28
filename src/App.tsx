@@ -797,15 +797,17 @@ export default function App() {
     setIsMatching(false);
   };
 
+  const apiStateUrl = API_BASE ? `${API_BASE}/api/state` : `${typeof window !== 'undefined' ? window.location.origin : ''}/api/state`;
   if (!state) return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center font-mono p-6 text-center">
       <p className="text-zinc-400 mb-4">Loading Bootcamp...</p>
       {apiError && (
-        <div className="max-w-md rounded-lg bg-red-500/10 border border-red-500/30 p-4 text-left text-sm text-red-300">
+        <div className="max-w-lg rounded-lg bg-red-500/10 border border-red-500/30 p-4 text-left text-sm text-red-300">
           <p className="font-semibold mb-2">Could not load game data</p>
           <p className="mb-2">{apiError}</p>
+          <p className="mb-2 text-zinc-400 font-mono text-xs break-all">Fetching: {apiStateUrl}</p>
           <p className="text-zinc-500 text-xs">
-            Deploy the backend to Railway, then in Vercel set <code className="bg-zinc-800 px-1">VITE_API_URL</code> to your Railway URL and redeploy.
+            If that URL shows vercel.app, VITE_API_URL wasn&apos;t applied — add it in Vercel → Settings → Environment Variables, then <strong>Redeploy</strong> (new build required). If it shows railway.app and still fails, check Railway logs.
           </p>
         </div>
       )}
