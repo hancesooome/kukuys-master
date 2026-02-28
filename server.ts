@@ -413,6 +413,15 @@ async function getLiquipediaPlayerRole(name: string): Promise<string | null> {
 const app = express();
 app.use(express.json());
 
+// CORS: allow Vercel frontend to call this API when deployed separately
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
+
 let backfillRunning = false;
 async function backfillPlayerPhotos() {
   if (backfillRunning) return;
@@ -1031,7 +1040,7 @@ async function startServer() {
     });
   }
 
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     // Single delayed backfill so we don't burst on startup; rate limiter will space all Liquipedia requests.

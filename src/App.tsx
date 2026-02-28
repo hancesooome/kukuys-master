@@ -65,6 +65,9 @@ const SLOT_H = 88;
 const SLOT_GAP = 12;
 const SLOT_STEP = SLOT_H + SLOT_GAP;
 
+/** In production (e.g. Vercel), set VITE_API_URL to your backend (e.g. https://your-app.railway.app) so /api calls reach the server. */
+const API_BASE = (import.meta.env.VITE_API_URL as string) ?? '';
+
 function BracketConnector({ prevCount, nextCount, colHeight }: { prevCount: number; nextCount: number; colHeight: number }) {
   const w = 32;
   const slotsPerGroup = prevCount / nextCount;
@@ -574,7 +577,7 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const res = await fetch('/api/state');
+      const res = await fetch(`${API_BASE}/api/state`);
       const data = await res.json();
       if (data.state != null) setState(data.state);
       if (Array.isArray(data.players)) setPlayers(data.players);
@@ -590,7 +593,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch('/api/recruit-config')
+    fetch(`${API_BASE}/api/recruit-config`)
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d.rates) && d.pool && typeof d.pool === 'object') setRecruitConfig({ rates: d.rates, pool: d.pool });
@@ -599,7 +602,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch('/api/tournaments')
+    fetch(`${API_BASE}/api/tournaments`)
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d.tournaments) && d.tournaments.length > 0) {
@@ -625,7 +628,7 @@ export default function App() {
     const withoutPhoto = players.filter((p) => !p.image_url && !refreshedIdsRef.current.has(p.id));
     if (withoutPhoto.length === 0) return;
     const next = withoutPhoto[0];
-    fetch(`/api/refresh-player-image?playerId=${encodeURIComponent(next.id)}`)
+    fetch(`${API_BASE}/api/refresh-player-image?playerId=${encodeURIComponent(next.id)}`)
       .then((r) => r.json())
       .then((data) => {
         refreshedIdsRef.current.add(next.id);
@@ -638,7 +641,7 @@ export default function App() {
   }, [players]);
 
   const handleAction = async (playerId: string, action: string) => {
-    const res = await fetch('/api/action', {
+    const res = await fetch(`${API_BASE}/api/action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playerId, action }),
@@ -655,7 +658,7 @@ export default function App() {
   };
 
   const handleRecruit = async () => {
-    const res = await fetch('/api/recruit', { method: 'POST' });
+    const res = await fetch(`${API_BASE}/api/recruit`, { method: 'POST' });
     if (res.ok) {
       fetchData();
     } else {
@@ -666,7 +669,7 @@ export default function App() {
 
   const handleResetCollection = async () => {
     if (!confirm('Remove ALL players and reset coins/slots? You will only be able to recruit from the Player pool (per tier) above.')) return;
-    const res = await fetch('/api/reset-collection', { method: 'POST' });
+    const res = await fetch(`${API_BASE}/api/reset-collection`, { method: 'POST' });
     if (res.ok) {
       const data = await res.json();
       if (data.state != null) setState(data.state);
@@ -678,7 +681,7 @@ export default function App() {
   };
 
   const handleExpandCollection = async () => {
-    const res = await fetch('/api/expand-collection', { method: 'POST' });
+    const res = await fetch(`${API_BASE}/api/expand-collection`, { method: 'POST' });
     if (res.ok) {
       fetchData();
     } else {
@@ -691,7 +694,7 @@ export default function App() {
   const handleLoadPhotos = async () => {
     setLoadingPhotos(true);
     try {
-      const res = await fetch('/api/backfill-photos', { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/backfill-photos`, { method: 'POST' });
       const data = await res.json();
       if (data.success && Array.isArray(data.players)) {
         setPlayers(data.players);
@@ -706,7 +709,7 @@ export default function App() {
   const handleRefreshTeams = async () => {
     setLoadingTeams(true);
     try {
-      const res = await fetch('/api/backfill-teams', { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/backfill-teams`, { method: 'POST' });
       const data = await res.json();
       if (data.success && Array.isArray(data.players)) {
         setPlayers(data.players);
@@ -719,7 +722,7 @@ export default function App() {
   const handleRecycle = async (playerId: string, playerName: string) => {
     if (!confirm(`Recycle ${playerName}? You'll get 10 coins and remove them from your collection.`)) return;
     try {
-      const res = await fetch('/api/action', {
+      const res = await fetch(`${API_BASE}/api/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ playerId, action: 'recycle' }),
@@ -762,7 +765,7 @@ export default function App() {
     setMatchResult(null);
     setMatchLog([]);
     try {
-      const res = await fetch('/api/tournament-run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const res = await fetch(`${API_BASE}/api/tournament-run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const data = await res.json();
       if (!res.ok) {
         alert(data.error || 'Failed to run tournament');
@@ -805,7 +808,7 @@ export default function App() {
               type="button"
               onClick={async () => {
                 setTestCoinsAdded(false);
-                const url = `${window.location.origin}/api/add-test-coins`;
+                const url = `${API_BASE || window.location.origin}/api/add-test-coins`;
                 try {
                   const res = await fetch(url, { method: 'POST', credentials: 'same-origin' });
                   if (!res.ok) {

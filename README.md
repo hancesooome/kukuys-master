@@ -81,6 +81,30 @@ npm run build
 npm run start
 ```
 
+### Deploying (Vercel frontend + Railway backend)
+
+Vercel only serves the **static frontend**. The Express API and SQLite backend must run elsewhere.
+
+#### Step 1: Deploy backend to Railway
+
+1. Go to [railway.app](https://railway.app) and sign in (GitHub).
+2. **New Project** → **Deploy from GitHub repo** → select your `kukuys-master` repo.
+3. Railway will detect Node. Configure:
+   - **Build Command:** `npm install && npm run build`
+   - **Start Command:** `npm start`
+   - **Root Directory:** (leave default)
+4. Under **Settings** → **Networking** → **Generate Domain** — you’ll get a URL like `https://kukuys-master-production-xxxx.up.railway.app`.
+5. Copy that URL. You’ll need it for Vercel.
+6. (Optional) Add env vars under **Variables** — e.g. `NODE_ENV=production`. Supabase vars can be added here if you use them on the backend.
+7. **Note:** On Railway’s free tier, the SQLite database is ephemeral — data resets on redeploy. For persistent data, use Railway volumes (paid) or migrate to Supabase/Postgres later.
+
+#### Step 2: Point Vercel frontend to Railway
+
+1. In your **Vercel** project → **Settings** → **Environment Variables**
+2. Add: **Name** `VITE_API_URL`, **Value** your Railway URL (e.g. `https://kukuys-master-production-xxxx.up.railway.app`), **no trailing slash**.
+3. **Redeploy** the Vercel project so the new env var is used.
+4. Open your Vercel URL — the app should load and call the Railway API.
+
 ---
 
 ## 📁 Project Structure
