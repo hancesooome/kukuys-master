@@ -1,8 +1,10 @@
+import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createClient } from "@supabase/supabase-js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -90,6 +92,20 @@ try {
 } catch (_) {}
 
 const DOTA2_ROLES = ["Carry", "Mid", "Offlane", "Soft Support", "Hard Support"] as const;
+
+// ── Supabase client (reads from player_cache populated by sync-players.ts) ──
+const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY)
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
+  : null;
+
+async function getSupabasePlayer(name: string): Promise<{ image_url: string | null; team: string | null; role: string | null } | null> {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.from("player_cache").select("image_url, team, role").eq("name", name).maybeSingle();
+    if (error || !data) return null;
+    return data;
+  } catch { return null; }
+}
 
 // Backfill role for existing players
 try {
@@ -195,69 +211,104 @@ async function fetchJson(url: string, opts?: RequestInit): Promise<unknown> {
   }
 }
 
+// Alternate Liquipedia page titles for players whose page name differs from their in-game name
+const LIQUIPEDIA_PAGE_TITLES: Record<string, string> = {
+  Natsumi: "Natsumi-",
+  Tims: "TIMS",
+  Nikko: "Force_(Filipino_player)",
+};
+
+function liquipediaPageTitle(name: string): string {
+  return (LIQUIPEDIA_PAGE_TITLES[name] ?? name).replace(/ /g, "_");
+}
+
+/** Resolve a Liquipedia File: title to its actual image URL. */
+async function resolveFileUrl(fileTitle: string): Promise<string | null> {
+  const infoData = await fetchLiquipediaJson(
+    `${LIQUIPEDIA_API}?action=query&titles=${encodeURIComponent(fileTitle)}&prop=imageinfo&iiprop=url&format=json&origin=*`,
+    false
+  ) as any;
+  const pages = infoData?.query?.pages;
+  if (!pages) return null;
+  const page = Object.values(pages)[0] as { imageinfo?: { url: string }[] };
+  return page?.imageinfo?.[0]?.url ?? null;
+}
+
 async function getLiquipediaPlayerImage(name: string): Promise<string | null> {
   const cached = imageCache.get(name);
   if (cached && cached.expiry > Date.now()) return cached.url;
 
+  const pageTitle = liquipediaPageTitle(name);
+
   try {
-    const title = encodeURIComponent(name.replace(/ /g, "_"));
-    const playerPrefix = `File:${name} `;
-    const playerPrefixAlt = `File:${name}_`;
+    // Strategy 1: Extract |image= from infobox wikitext (the actual profile photo)
+    const data = await fetchLiquipediaJson(
+      `${LIQUIPEDIA_API}?action=query&titles=${encodeURIComponent(pageTitle)}&prop=revisions&rvprop=content&rvslots=main&format=json&origin=*&redirects=1`,
+      false
+    ) as any;
+    if (data?.query?.pages) {
+      const page = Object.values(data.query.pages)[0] as any;
+      const wikitext = page?.revisions?.[0]?.slots?.main?.["*"];
+      if (wikitext && typeof wikitext === "string") {
+        const imageMatch = wikitext.match(/\|image\s*=\s*(.+?)(?:\n\||$)/i);
+        if (imageMatch?.[1]) {
+          let filename = imageMatch[1].trim();
+          if (filename && !filename.startsWith("{{") && !filename.startsWith("<!--")) {
+            if (!filename.startsWith("File:")) filename = `File:${filename}`;
+            const url = await resolveFileUrl(filename);
+            if (url) {
+              imageCache.set(name, { url, expiry: Date.now() + CACHE_TTL_MS });
+              return url;
+            }
+          }
+        }
+      }
+    }
+
+    // Strategy 2: Search page images for a matching player portrait
+    const displayName = LIQUIPEDIA_PAGE_TITLES[name] ?? name;
     const matches = (img: { title: string }) =>
-      img.title.startsWith(playerPrefix) ||
-      img.title.startsWith(playerPrefixAlt) ||
-      img.title === `File:${name}.png` ||
-      img.title === `File:${name}.jpg`;
+      img.title.startsWith(`File:${name} `) || img.title.startsWith(`File:${name}_`) ||
+      img.title.startsWith(`File:${displayName} `) || img.title.startsWith(`File:${displayName}_`) ||
+      img.title === `File:${name}.png` || img.title === `File:${name}.jpg` ||
+      img.title === `File:${displayName}.png` || img.title === `File:${displayName}.jpg`;
 
     let portrait: { title: string } | null = null;
     let imcontinue: string | undefined;
     let continueParam: string | undefined;
     do {
       const q = new URLSearchParams();
-      q.set("action", "query");
-      q.set("titles", name.replace(/ /g, "_"));
-      q.set("prop", "images");
-      q.set("format", "json");
-      q.set("origin", "*");
-      q.set("imlimit", "50");
+      q.set("action", "query"); q.set("titles", pageTitle); q.set("prop", "images");
+      q.set("format", "json"); q.set("origin", "*"); q.set("imlimit", "50"); q.set("redirects", "1");
       if (imcontinue) q.set("imcontinue", imcontinue);
       if (continueParam) q.set("continue", continueParam);
       const listData = await fetchLiquipediaJson(`${LIQUIPEDIA_API}?${q.toString()}`, false) as any;
       if (!listData?.query?.pages) break;
-      const page = Object.values(listData.query.pages)[0] as { images?: { title: string }[] };
-      const images = page?.images ?? [];
-      portrait = images.find(matches) ?? null;
-      const cont = listData?.continue;
-      imcontinue = cont?.imcontinue;
-      continueParam = cont?.continue;
+      const pg = Object.values(listData.query.pages)[0] as any;
+      portrait = pg?.images?.find(matches) ?? null;
+      imcontinue = listData?.continue?.imcontinue;
+      continueParam = listData?.continue?.continue;
     } while (!portrait && imcontinue);
 
-    if (!portrait) return null;
-
-    const fileTitle = encodeURIComponent(portrait.title);
-    const infoData = await fetchLiquipediaJson(
-      `${LIQUIPEDIA_API}?action=query&titles=${fileTitle}&prop=imageinfo&iiprop=url&format=json&origin=*`,
-      false
-    ) as unknown;
-    const infoPages = (infoData as any)?.query?.pages;
-    if (!infoPages) return null;
-    const infoPage = Object.values(infoPages)[0] as { imageinfo?: { url: string }[] };
-    const url = infoPage?.imageinfo?.[0]?.url ?? null;
-    if (url) {
-      imageCache.set(name, { url, expiry: Date.now() + CACHE_TTL_MS });
+    if (portrait) {
+      const url = await resolveFileUrl(portrait.title);
+      if (url) {
+        imageCache.set(name, { url, expiry: Date.now() + CACHE_TTL_MS });
+        return url;
+      }
     }
-    return url;
   } catch (e) {
     console.warn("Liquipedia image fetch failed for", name, (e instanceof Error ? e.message : String(e)));
-    return null;
   }
+
+  return null;
 }
 
 async function getLiquipediaPlayerTeam(name: string): Promise<string | null> {
   const cached = teamCache.get(name);
   if (cached && cached.expiry > Date.now()) return cached.team;
 
-  const pageTitle = name.replace(/ /g, "_");
+  const pageTitle = liquipediaPageTitle(name);
 
   const resolveRedirect = async (title: string): Promise<string> => {
     try {
@@ -376,7 +427,7 @@ async function getLiquipediaPlayerRole(name: string): Promise<string | null> {
   const cached = roleCache.get(name);
   if (cached && cached.expiry > Date.now()) return cached.role;
 
-  const pageTitle = name.replace(/ /g, "_");
+  const pageTitle = liquipediaPageTitle(name);
 
   try {
     const data = await fetchLiquipediaJson(
@@ -485,7 +536,10 @@ app.get("/api/refresh-player-image", async (req, res) => {
   if (!playerId?.trim()) return res.status(400).json({ error: "Missing playerId" });
   const player = db.prepare("SELECT id, name, image_url FROM players WHERE id = ?").get(playerId) as any;
   if (!player) return res.status(404).json({ error: "Player not found" });
-  const imageUrl = await getLiquipediaPlayerImage(player.name);
+  // Try Supabase first
+  const cached = await getSupabasePlayer(player.name);
+  let imageUrl = cached?.image_url ?? null;
+  if (!imageUrl) imageUrl = await getLiquipediaPlayerImage(player.name);
   if (imageUrl) {
     db.prepare("UPDATE players SET image_url = ? WHERE id = ?").run(imageUrl, playerId);
   }
@@ -548,9 +602,13 @@ app.post("/api/backfill-photos", async (req, res) => {
   const results: { name: string; ok: boolean }[] = [];
   for (const p of needPhoto) {
     try {
-      const url = await getLiquipediaPlayerImage(p.name);
+      // Try Supabase first, then Liquipedia
+      const cached = await getSupabasePlayer(p.name);
+      const url = cached?.image_url ?? await getLiquipediaPlayerImage(p.name);
       if (url) {
         db.prepare("UPDATE players SET image_url = ? WHERE id = ?").run(url, p.id);
+        if (cached?.team) db.prepare("UPDATE players SET team = ? WHERE id = ?").run(cached.team, p.id);
+        if (cached?.role) db.prepare("UPDATE players SET role = ? WHERE id = ?").run(cached.role, p.id);
         results.push({ name: p.name, ok: true });
         console.log("Photo loaded:", p.name);
       } else {
@@ -596,31 +654,21 @@ app.post("/api/recruit", async (req, res) => {
     trashtalk: Math.floor(Math.random() * 100),
   };
 
-  const role = DOTA2_ROLES[Math.floor(Math.random() * DOTA2_ROLES.length)];
+  // Try Supabase first (instant), then fallback to defaults
+  const cached = await getSupabasePlayer(name);
+  const role = cached?.role ?? DOTA2_ROLES[Math.floor(Math.random() * DOTA2_ROLES.length)];
+  const imageUrl = cached?.image_url ?? null;
+  const team = cached?.team ?? KNOWN_PLAYER_TEAMS[name] ?? "Kukuys";
 
   db.prepare(`
-    INSERT INTO players (id, name, tier, role, drafting, mechanics, mental_strength, leadership, trashtalk, image_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, name, tier, role, stats.drafting, stats.mechanics, stats.mental_strength, stats.leadership, stats.trashtalk, null);
+    INSERT INTO players (id, name, tier, role, drafting, mechanics, mental_strength, leadership, trashtalk, image_url, team)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, name, tier, role, stats.drafting, stats.mechanics, stats.mental_strength, stats.leadership, stats.trashtalk, imageUrl, team);
 
   db.prepare("UPDATE game_state SET coins = coins - 200 WHERE id = 1").run();
 
   const playerRow = db.prepare("SELECT * FROM players WHERE id = ?").get(id) as any;
-  res.json({ player: playerRow ? { ...playerRow, energy: 100 } : { id, name, tier, role, ...stats, energy: 100 } });
-
-  // Liquipedia fetches in background — no blocking; client refreshes via fetchData
-  (async () => {
-    try {
-      const [liquipediaRole, imageUrl, team] = await Promise.all([
-        getLiquipediaPlayerRole(name),
-        getLiquipediaPlayerImage(name),
-        getLiquipediaPlayerTeam(name),
-      ]);
-      if (liquipediaRole) db.prepare("UPDATE players SET role = ? WHERE id = ?").run(liquipediaRole, id);
-      if (imageUrl) db.prepare("UPDATE players SET image_url = ? WHERE id = ?").run(imageUrl, id);
-      if (team != null) db.prepare("UPDATE players SET team = ? WHERE id = ?").run(team, id);
-    } catch (_) {}
-  })();
+  res.json({ player: playerRow ? { ...playerRow, energy: 100 } : { id, name, tier, role, ...stats, energy: 100, image_url: imageUrl, team } });
 });
 
 const SLOT_EXPAND_COST = 10000;
@@ -669,14 +717,14 @@ const KNOWN_PLAYER_TEAMS: Record<string, string> = {
   Tims: "OG",
   Palos: "Execration",
   DJ: "PlayTime",
-  Kuku: "Kukuys",
+  Kuku: "PlayTime",
   Gabbi: "Execration",
   Armel: "Blacklist International",
   Karl: "T1",
-  Tino: "Team Secret",
-  Natsumi: "Talon Esports",
-  Skem: "Bleed Esports",
-  Nikko: "BOOM Esports",
+  Tino: "Execration",
+  Natsumi: "OG",
+  Skem: "Shopify Rebellion",
+  Nikko: "OG",
   Kokz: "Omega Gaming",
   Yowe: "Motivate.Trust",
   JG: "Omega Gaming",
