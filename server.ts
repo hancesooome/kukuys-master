@@ -410,8 +410,16 @@ async function getLiquipediaPlayerRole(name: string): Promise<string | null> {
   return null;
 }
 
+process.on("uncaughtException", (err) => console.error("UNCAUGHT:", err));
+process.on("unhandledRejection", (err) => console.error("UNHANDLED:", err));
+
 const app = express();
 app.use(express.json());
+
+app.use((req, _res, next) => {
+  console.log(`→ ${req.method} ${req.url}`);
+  next();
+});
 
 // CORS: allow Vercel frontend to call this API when deployed separately
 app.use((req, res, next) => {
