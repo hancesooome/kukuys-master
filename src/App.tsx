@@ -15,8 +15,10 @@ import {
   MessageSquare,
   User,
   Percent,
-  Recycle
+  Recycle,
+  Sparkles
 } from 'lucide-react';
+import { GachaCinematic } from './GachaCinematic';
 
 interface Player {
   id: string;
@@ -454,6 +456,8 @@ export default function App() {
   const [grindTick, setGrindTick] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
+  const [recruitRevealPlayer, setRecruitRevealPlayer] = useState<Player | null>(null);
+  const [isRecruiting, setIsRecruiting] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => setGrindTick((n) => n + 1), 1000);
@@ -663,17 +667,36 @@ export default function App() {
 
   const collectionGridRef = useRef<HTMLDivElement>(null);
   const handleRecruit = async () => {
-    const res = await fetch(`${API_BASE}/api/recruit`, { method: 'POST' });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.player) {
-        setPlayers((prev) => [data.player, ...prev]);
-        if (data.player.id) setState((s) => s ? { ...s, coins: s.coins - 200 } : s);
+    setIsRecruiting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/recruit`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.player) {
+          setState((s) => s ? { ...s, coins: s.coins - 200 } : s);
+          setRecruitRevealPlayer(data.player);
+        }
+        fetchData();
+      } else {
+        const data = await res.json();
+        setToast(data.error ?? 'Recruit failed');
       }
-      fetchData();
-    } else {
-      const data = await res.json();
-      setToast(data.error);
+    } finally {
+      setIsRecruiting(false);
+    }
+  };
+
+  const handleGachaCollect = () => {
+    if (recruitRevealPlayer) {
+      // Server already added the player via recruit; fetchData may have synced them.
+      // Only add locally if not already present (e.g. user collected before fetchData completed).
+      setPlayers((prev) => {
+        const exists = prev.some((p) => p.id === recruitRevealPlayer.id);
+        if (exists) return prev;
+        return [recruitRevealPlayer, ...prev];
+      });
+      setRecruitRevealPlayer(null);
+      fetchData(); // Sync with server
     }
   };
 
@@ -778,8 +801,15 @@ export default function App() {
 
   const apiStateUrl = API_BASE ? `${API_BASE}/api/state` : `${typeof window !== 'undefined' ? window.location.origin : ''}/api/state`;
   if (!state) return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center font-mono p-6 text-center">
-      <p className="text-zinc-400 mb-4">Loading Bootcamp...</p>
+    <div className="min-h-screen bg-gradient-to-b from-[#0a080c] to-[#050505] text-white flex flex-col items-center justify-center font-sans p-6 text-center">
+      <motion.div
+        animate={{ opacity: [0.6, 1, 0.6] }}
+        transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+        className="w-12 h-12 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mb-6"
+      >
+        <Gamepad2 size={24} className="text-emerald-400" />
+      </motion.div>
+      <p className="text-zinc-400 mb-4 font-medium">Loading Bootcamp...</p>
       {apiError && (
         <div className="max-w-lg rounded-lg bg-red-500/10 border border-red-500/30 p-4 text-left text-sm text-red-300">
           <p className="font-semibold mb-2">Could not load game data</p>
@@ -794,24 +824,38 @@ export default function App() {
   );
 
   return (
-    <div className="min-h-screen bg-[#050505] text-zinc-300 font-sans selection:bg-emerald-500/30">
-      {/* Header */}
-      <header className="border-b border-zinc-800 p-4 sticky top-0 bg-[#050505]/80 backdrop-blur-md z-50">
+    <div className="min-h-screen bg-gradient-to-b from-[#0a080c] via-[#080608] to-[#050505] text-zinc-300 font-sans selection:bg-emerald-500/30">
+      <motion.div
+        animate={{ opacity: recruitRevealPlayer ? 0 : 1 }}
+        transition={{ duration: 0.5, ease: 'easeInOut' }}
+        className="flex flex-col min-h-screen"
+      >
+      {/* Header – premium game UI */}
+      <header className="border-b border-zinc-800/80 p-4 sticky top-0 bg-[#050505]/90 backdrop-blur-xl z-50 shadow-[0_4px_24px_rgba(0,0,0,0.4)]">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-emerald-500 rounded-lg flex items-center justify-center text-black font-bold text-xl">K</div>
+          <div className="flex items-center gap-4">
+            <motion.div
+              className="w-12 h-12 rounded-xl flex items-center justify-center text-black font-bold text-2xl font-[Cinzel] shadow-[0_0_24px_rgba(16,185,129,0.35)]"
+              style={{ background: 'linear-gradient(135deg, #34d399 0%, #10b981 50%, #059669 100%)' }}
+              whileHover={{ scale: 1.05 }}
+              transition={{ type: 'spring', stiffness: 400 }}
+            >
+              K
+            </motion.div>
             <div>
-              <h1 className="text-white font-bold tracking-tighter text-lg uppercase">Kukuys Master</h1>
-              <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">Dota Manager Tycoon v1.0</p>
+              <h1 className="font-[Cinzel] text-white font-bold tracking-tight text-xl uppercase">Kukuys Master</h1>
+              <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">Dota Manager Tycoon</p>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="flex flex-col items-end">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold">Kukuy Coins</span>
-              <span className="text-emerald-400 font-mono text-xl font-bold">{state.coins.toLocaleString()}</span>
+          <div className="flex items-center gap-5">
+            <div className="flex flex-col items-end px-4 py-2 rounded-xl bg-zinc-900/60 border border-zinc-700/50">
+              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Kukuy Coins</span>
+              <span className="text-emerald-400 font-mono text-xl font-bold drop-shadow-[0_0_12px_rgba(16,185,129,0.3)]">{state.coins.toLocaleString()}</span>
             </div>
-            <button
+            <motion.button
               type="button"
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.98 }}
               onClick={async () => {
                 setTestCoinsAdded(false);
                 const url = `${API_BASE || window.location.origin}/api/add-test-coins`;
@@ -833,17 +877,17 @@ export default function App() {
                   await fetchData();
                 }
               }}
-              className="px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 text-xs font-bold uppercase tracking-wider border border-amber-500/40 active:scale-95 transition-transform disabled:opacity-70"
+              className="px-4 py-2 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 text-xs font-bold uppercase tracking-wider border border-amber-500/40 transition-colors disabled:opacity-70 shadow-[0_0_16px_rgba(251,191,36,0.15)]"
               title="Add 10,000 coins for testing"
             >
               {testCoinsAdded ? 'Added!' : '+10k'}
-            </button>
+            </motion.button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-4 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Navigation */}
+      <main className="max-w-7xl mx-auto p-4 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 relative">
+        {/* Navigation – premium game tabs */}
         <nav className="lg:col-span-2 flex lg:flex-col gap-2 overflow-x-auto pb-4 lg:pb-0">
           {[
             { id: 'bootcamp', icon: Gamepad2, label: 'Bootcamp' },
@@ -852,18 +896,20 @@ export default function App() {
             { id: 'rates', icon: Percent, label: 'Rates' },
             { id: 'shop', icon: ShoppingBag, label: 'Upgrades' },
           ].map((tab) => (
-            <button
+            <motion.button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 whitespace-nowrap ${
+              whileHover={{ x: activeTab !== tab.id ? 4 : 0 }}
+              whileTap={{ scale: 0.98 }}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 whitespace-nowrap border ${
                 activeTab === tab.id 
-                  ? 'bg-emerald-500 text-black font-bold shadow-[0_0_20px_rgba(16,185,129,0.2)]' 
-                  : 'hover:bg-zinc-800 text-zinc-400'
+                  ? 'bg-emerald-500 text-black font-bold border-emerald-400/50 shadow-[0_0_24px_rgba(16,185,129,0.3)]' 
+                  : 'bg-zinc-900/40 border-zinc-700/30 hover:bg-zinc-800/80 hover:border-zinc-600/50 text-zinc-400'
               }`}
             >
-              <tab.icon size={18} />
-              <span className="text-sm uppercase tracking-tight">{tab.label}</span>
-            </button>
+              <tab.icon size={18} className={activeTab === tab.id ? 'opacity-100' : 'opacity-70'} />
+              <span className="text-sm uppercase tracking-tight font-semibold">{tab.label}</span>
+            </motion.button>
           ))}
         </nav>
 
@@ -1008,7 +1054,7 @@ export default function App() {
                 className="space-y-6"
               >
                 <div className="flex flex-wrap justify-between items-center gap-3">
-                  <h2 className="text-xl font-bold text-white uppercase tracking-tight">Your Collection</h2>
+                  <h2 className="font-[Cinzel] text-xl font-bold text-white uppercase tracking-tight">Your Collection</h2>
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="text-zinc-500 text-sm font-mono">
                       {players.length}/{state?.collection_slots ?? 8}
@@ -1024,13 +1070,21 @@ export default function App() {
                         </button>
                       ))}
                     </div>
-                    <button 
+                    <motion.button 
                       onClick={handleRecruit}
-                      disabled={!state || players.length >= (state.collection_slots ?? 8)}
-                      className="flex items-center gap-2 px-6 py-3 bg-emerald-500 text-black font-bold rounded-xl hover:scale-105 transition-transform shadow-lg shadow-emerald-500/20 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                      disabled={!state || players.length >= (state.collection_slots ?? 8) || isRecruiting}
+                      whileHover={{ scale: 1.03 }}
+                      whileTap={{ scale: 0.98 }}
+                      className="flex items-center gap-2 px-6 py-3 bg-emerald-500 text-black font-bold rounded-xl transition-all shadow-[0_0_24px_rgba(16,185,129,0.3)] hover:shadow-[0_0_32px_rgba(16,185,129,0.4)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                     >
-                      <Dices size={18} /> RECRUIT (200)
-                    </button>
+                      <motion.span
+                        animate={isRecruiting ? { rotate: 360 } : { rotate: 0 }}
+                        transition={{ duration: 0.8, repeat: isRecruiting ? Infinity : 0, ease: 'linear' }}
+                      >
+                        <Dices size={18} />
+                      </motion.span>
+                      {isRecruiting ? 'RECRUITING…' : 'RECRUIT (200)'}
+                    </motion.button>
                   </div>
                 </div>
                 {state && players.length >= (state.collection_slots ?? 8) && (
@@ -1160,9 +1214,9 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="max-w-4xl mx-auto space-y-6"
               >
-                <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8">
-                  <Trophy size={48} className="mx-auto mb-4 text-emerald-500" />
-                  <h2 className="text-2xl font-bold text-white uppercase mb-2 text-center">{currentTournament}</h2>
+                <div className="bg-zinc-900/80 border border-zinc-700/60 rounded-3xl p-8 shadow-[0_8px_32px_rgba(0,0,0,0.3)]">
+                  <Trophy size={48} className="mx-auto mb-4 text-emerald-500 drop-shadow-[0_0_16px_rgba(16,185,129,0.5)]" />
+                  <h2 className="font-[Cinzel] text-2xl font-bold text-white uppercase mb-2 text-center">{currentTournament}</h2>
                   <p className="text-zinc-500 text-sm mb-8 text-center">Double-elimination bracket. Each match is BO3. Become champion to earn Kukuys coins.</p>
                   
                   {!bracketResult && !isMatching && (
@@ -1176,7 +1230,7 @@ export default function App() {
                         onClick={startMatch}
                         disabled={!canEnter}
                         title={roster.length < 5 ? 'Need 5 players in roster' : rosterGrinding ? 'Someone is grinding — wait until all grind sessions finish' : undefined}
-                        className="px-12 py-4 bg-emerald-500 text-black font-bold rounded-2xl text-lg hover:scale-105 transition-transform shadow-xl shadow-emerald-500/20 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                        className="px-12 py-4 bg-emerald-500 text-black font-bold rounded-2xl text-lg transition-all shadow-[0_0_32px_rgba(16,185,129,0.35)] hover:shadow-[0_0_40px_rgba(16,185,129,0.45)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                       >
                         {rosterGrinding ? 'GRINDING… WAIT' : 'ENTER TOURNAMENT'}
                       </button>
@@ -1270,7 +1324,7 @@ export default function App() {
                     <Percent className="w-6 h-6 text-emerald-400" />
                   </div>
                   <div>
-                    <h2 className="text-xl font-bold text-white uppercase tracking-tight">Recruit rates</h2>
+                    <h2 className="font-[Cinzel] text-xl font-bold text-white uppercase tracking-tight">Recruit rates</h2>
                     <p className="text-zinc-500 text-sm">Chance to get each tier when you recruit (200 coins per pull).</p>
                   </div>
                 </div>
@@ -1402,6 +1456,7 @@ export default function App() {
         </div>
         <p className="text-[10px] uppercase tracking-widest font-bold">© 2026 KUKUYS MASTER ENTERTAINMENT</p>
       </footer>
+      </motion.div>
 
       {/* In-page Toast */}
       <AnimatePresence>
@@ -1412,12 +1467,27 @@ export default function App() {
             exit={{ opacity: 0, y: -20 }}
             className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-md w-[calc(100%-2rem)]"
           >
-            <div className="bg-zinc-800 border border-zinc-600 rounded-xl px-4 py-3 flex items-center justify-between gap-4 shadow-xl">
+            <div className="bg-zinc-800/95 border border-zinc-600/80 rounded-xl px-5 py-4 flex items-center justify-between gap-4 shadow-[0_8px_32px_rgba(0,0,0,0.5)] backdrop-blur-md">
               <p className="text-sm text-zinc-200">{toast}</p>
-              <button onClick={() => setToast(null)} className="shrink-0 p-1 rounded-lg hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors" aria-label="Dismiss">
+              <button onClick={() => setToast(null)} className="shrink-0 p-2 rounded-lg hover:bg-zinc-700/80 text-zinc-400 hover:text-white transition-colors" aria-label="Dismiss">
                 <X size={18} />
               </button>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Gacha Cinematic Modal (Night Crows style) */}
+      <AnimatePresence>
+        {recruitRevealPlayer && (
+          <motion.div key={recruitRevealPlayer.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <GachaCinematic
+              player={recruitRevealPlayer}
+              style={TIER_CARD_STYLES[recruitRevealPlayer.tier] ?? TIER_CARD_STYLES.Common}
+              onCollect={handleGachaCollect}
+              CollectionCardPhoto={CollectionCardPhoto}
+              StatRadar={StatRadar}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -1429,7 +1499,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
             onClick={() => setConfirmDialog(null)}
           >
             <motion.div
@@ -1437,22 +1507,26 @@ export default function App() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-zinc-800 border border-zinc-600 rounded-xl p-6 max-w-md w-full shadow-xl"
+              className="bg-zinc-800/95 border border-zinc-600/80 rounded-2xl p-6 max-w-md w-full shadow-[0_16px_48px_rgba(0,0,0,0.5)] backdrop-blur-md"
             >
               <p className="text-zinc-200 mb-6">{confirmDialog.message}</p>
               <div className="flex gap-3 justify-end">
-                <button
+                <motion.button
                   onClick={() => setConfirmDialog(null)}
-                  className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-zinc-200 font-bold text-sm uppercase"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  className="px-5 py-2.5 rounded-xl bg-zinc-700/80 hover:bg-zinc-600 text-zinc-200 font-bold text-sm uppercase transition-colors"
                 >
                   Cancel
-                </button>
-                <button
+                </motion.button>
+                <motion.button
                   onClick={() => confirmDialog.onConfirm()}
-                  className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-sm uppercase"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-sm uppercase shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all"
                 >
                   Yes
-                </button>
+                </motion.button>
               </div>
             </motion.div>
           </motion.div>
