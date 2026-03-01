@@ -1,10 +1,20 @@
 import "dotenv/config";
-import express from "express";
+import express, { Request } from "express";
+
+declare global {
+  namespace Express {
+    interface Request {
+      userId?: number;
+    }
+  }
+}
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
+import bcrypt from "bcrypt";
+import crypto from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,13 +67,16 @@ try {
   }
 } catch (_) {}
 
-// One-time: reset collection_slots to new rule (8 base, +1 per 10k). Keep at least 8 or current player count.
+// One-time: reset collection_slots (only for legacy schema with id column; skip if already migrated to user_id)
 try {
-  const row = db.prepare("SELECT collection_slots FROM game_state WHERE id = 1").get() as { collection_slots: number } | undefined;
-  const count = (db.prepare("SELECT COUNT(*) as c FROM players").get() as { c: number }).c;
-  if (row && row.collection_slots > 8) {
-    const newSlots = Math.max(8, count);
-    db.prepare("UPDATE game_state SET collection_slots = ? WHERE id = 1").run(newSlots);
+  const gsCols = db.prepare("PRAGMA table_info(game_state)").all() as { name: string }[];
+  if (gsCols.some((c) => c.name === "id")) {
+    const row = db.prepare("SELECT collection_slots FROM game_state WHERE id = 1").get() as { collection_slots: number } | undefined;
+    const count = (db.prepare("SELECT COUNT(*) as c FROM players").get() as { c: number }).c;
+    if (row && row.collection_slots > 8) {
+      const newSlots = Math.max(8, count);
+      db.prepare("UPDATE game_state SET collection_slots = ? WHERE id = 1").run(newSlots);
+    }
   }
 } catch (_) {}
 try {
@@ -90,6 +103,78 @@ try {
     db.exec("ALTER TABLE players ADD COLUMN role TEXT");
   }
 } catch (_) {}
+
+// ── Auth: users & sessions ───────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+// Add user_id to game_state (migrate: create per-user state)
+try {
+  const gsCols = db.prepare("PRAGMA table_info(game_state)").all() as { name: string }[];
+  if (!gsCols.some((c) => c.name === "user_id")) {
+    db.exec("ALTER TABLE game_state ADD COLUMN user_id INTEGER DEFAULT 1");
+    db.exec("CREATE TABLE IF NOT EXISTS game_state_new (user_id INTEGER PRIMARY KEY, coins INTEGER DEFAULT 1000, internet_level INTEGER DEFAULT 1, food_level INTEGER DEFAULT 1, collection_slots INTEGER DEFAULT 8, last_updated DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    const row = db.prepare("SELECT * FROM game_state WHERE id = 1").get() as any;
+    if (row) {
+      db.prepare("INSERT OR REPLACE INTO game_state_new (user_id, coins, internet_level, food_level, collection_slots, last_updated) VALUES (1, ?, ?, ?, ?, ?)").run(row.coins ?? 1000, row.internet_level ?? 1, row.food_level ?? 1, row.collection_slots ?? 8, row.last_updated ?? new Date().toISOString());
+    } else {
+      db.prepare("INSERT OR IGNORE INTO game_state_new (user_id, coins) VALUES (1, 1000)").run();
+    }
+    db.exec("DROP TABLE game_state");
+    db.exec("ALTER TABLE game_state_new RENAME TO game_state");
+  }
+} catch (_) {}
+
+// Add user_id to players
+try {
+  const pCols = db.prepare("PRAGMA table_info(players)").all() as { name: string }[];
+  if (!pCols.some((c) => c.name === "user_id")) {
+    db.exec("ALTER TABLE players ADD COLUMN user_id INTEGER DEFAULT 1");
+    db.prepare("UPDATE players SET user_id = 1 WHERE user_id IS NULL").run();
+  }
+} catch (_) {}
+
+// Ensure default user exists for legacy data
+try {
+  const userCount = (db.prepare("SELECT COUNT(*) as c FROM users").get() as any).c;
+  if (userCount === 0) {
+    const hash = await bcrypt.hash("guest", 10);
+    db.prepare("INSERT INTO users (id, username, password_hash) VALUES (1, 'guest', ?)").run(hash);
+  }
+} catch (_) {}
+
+// Auth middleware: reads Bearer token, sets req.userId (or null)
+function authMiddleware(req: any, _res: any, next: () => void) {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  if (!token) {
+    req.userId = null;
+    return next();
+  }
+  const row = db.prepare("SELECT user_id FROM sessions WHERE token = ?").get(token) as { user_id: number } | undefined;
+  req.userId = row ? row.user_id : null;
+  next();
+}
+
+// Require auth: 401 if not logged in
+function requireAuth(req: any, res: any, next: () => void) {
+  if (req.userId == null) {
+    return res.status(401).json({ error: "Login required" });
+  }
+  next();
+}
 
 const DOTA2_ROLES = ["Carry", "Midlaner", "Offlaner", "Support"] as const;
 
@@ -483,9 +568,72 @@ app.use((req, _res, next) => {
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
+});
+
+// Auth middleware: run on all routes
+app.use(authMiddleware);
+
+// ── Auth routes (no requireAuth) ──────────────────────────────────────────────
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || typeof username !== "string" || !password || typeof password !== "string") {
+      return res.status(400).json({ error: "Username and password required" });
+    }
+    const user = (username as string).trim().toLowerCase();
+    if (user.length < 2) return res.status(400).json({ error: "Username too short" });
+    if (password.length < 4) return res.status(400).json({ error: "Password must be at least 4 characters" });
+    const existing = db.prepare("SELECT id FROM users WHERE LOWER(username) = ?").get(user) as { id: number } | undefined;
+    if (existing) return res.status(400).json({ error: "Username already taken" });
+    const hash = await bcrypt.hash(password, 10);
+    const result = db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)").run(user, hash) as { lastInsertRowid: number };
+    const userId = result.lastInsertRowid;
+    db.prepare("INSERT INTO game_state (user_id, coins) VALUES (?, 1000)").run(userId);
+    const token = crypto.randomBytes(32).toString("hex");
+    db.prepare("INSERT INTO sessions (token, user_id) VALUES (?, ?)").run(token, userId);
+    const row = db.prepare("SELECT id, username FROM users WHERE id = ?").get(userId) as { id: number; username: string };
+    res.json({ token, user: { id: row.id, username: row.username } });
+  } catch (e) {
+    console.error("Register error", e);
+    res.status(500).json({ error: "Registration failed" });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || typeof username !== "string" || !password || typeof password !== "string") {
+      return res.status(400).json({ error: "Username and password required" });
+    }
+    const user = (username as string).trim().toLowerCase();
+    const row = db.prepare("SELECT id, username, password_hash FROM users WHERE LOWER(username) = ?").get(user) as { id: number; username: string; password_hash: string } | undefined;
+    if (!row) return res.status(401).json({ error: "Invalid username or password" });
+    const ok = await bcrypt.compare(password, row.password_hash);
+    if (!ok) return res.status(401).json({ error: "Invalid username or password" });
+    const token = crypto.randomBytes(32).toString("hex");
+    db.prepare("INSERT INTO sessions (token, user_id) VALUES (?, ?)").run(token, row.id);
+    res.json({ token, user: { id: row.id, username: row.username } });
+  } catch (e) {
+    console.error("Login error", e);
+    res.status(500).json({ error: "Login failed" });
+  }
+});
+
+app.get("/api/auth/me", (req, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
+  const row = db.prepare("SELECT id, username FROM users WHERE id = ?").get(req.userId) as { id: number; username: string } | undefined;
+  if (!row) return res.status(401).json({ error: "User not found" });
+  res.json({ user: { id: row.id, username: row.username } });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  if (token) db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+  res.json({ ok: true });
 });
 
 let backfillRunning = false;
@@ -506,8 +654,10 @@ async function backfillPlayerPhotos() {
   backfillRunning = false;
 }
 
-async function backfillPlayerTeams() {
-  const needTeam = db.prepare("SELECT id, name FROM players WHERE team IS NULL OR team = ''").all() as { id: string; name: string }[];
+async function backfillPlayerTeams(userId?: number) {
+  const needTeam = userId != null
+    ? db.prepare("SELECT id, name FROM players WHERE (team IS NULL OR team = '') AND user_id = ?").all(userId) as { id: string; name: string }[]
+    : db.prepare("SELECT id, name FROM players WHERE team IS NULL OR team = ''").all() as { id: string; name: string }[];
   for (const p of needTeam) {
     try {
       const team = await getLiquipediaPlayerTeam(p.name);
@@ -519,30 +669,43 @@ async function backfillPlayerTeams() {
   }
 }
 
-// API Routes
-app.get("/api/state", (req, res) => {
+// Helper: ensure game_state exists for user
+function getOrCreateState(userId: number) {
+  let state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(userId) as any;
+  if (!state) {
+    db.prepare("INSERT INTO game_state (user_id, coins) VALUES (?, 1000)").run(userId);
+    state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(userId);
+  }
+  return state;
+}
+
+// API Routes (game routes require auth)
+app.get("/api/state", (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   resolveExpiredGrinds();
   resolveExpiredSleeps();
-  const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
-  const players = db.prepare("SELECT * FROM players").all();
+  const state = getOrCreateState(req.userId);
+  const players = db.prepare("SELECT * FROM players WHERE user_id = ?").all(req.userId);
   res.json({ state, players });
-  // Do not run backfill here — it triggers many Liquipedia requests and can get the IP blocked. Use LOAD PHOTOS / REFRESH TEAMS or wait for scheduled backfill.
 });
 
 function addTestCoins(req: any, res: any) {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   const amount = 10000;
-  db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(amount);
-  const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
+  getOrCreateState(req.userId);
+  db.prepare("UPDATE game_state SET coins = coins + ? WHERE user_id = ?").run(amount, req.userId);
+  const state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(req.userId);
   res.json({ success: true, state, added: amount });
 }
 app.post("/api/add-test-coins", addTestCoins);
 app.get("/api/add-test-coins", addTestCoins);
 
-app.get("/api/refresh-player-image", async (req, res) => {
+app.get("/api/refresh-player-image", async (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   const playerId = req.query.playerId as string;
   if (!playerId?.trim()) return res.status(400).json({ error: "Missing playerId" });
-  const player = db.prepare("SELECT id, name, image_url FROM players WHERE id = ?").get(playerId) as any;
-  if (!player) return res.status(404).json({ error: "Player not found" });
+  const player = db.prepare("SELECT id, name, image_url, user_id FROM players WHERE id = ?").get(playerId) as any;
+  if (!player || player.user_id !== req.userId) return res.status(404).json({ error: "Player not found" });
   // Try Supabase first
   const cached = await getSupabasePlayer(player.name);
   let imageUrl = cached?.image_url ?? null;
@@ -554,11 +717,12 @@ app.get("/api/refresh-player-image", async (req, res) => {
   res.json({ success: true, player: updated, image_url: imageUrl || player.image_url });
 });
 
-app.get("/api/refresh-player-team", async (req, res) => {
+app.get("/api/refresh-player-team", async (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   const playerId = req.query.playerId as string;
   if (!playerId?.trim()) return res.status(400).json({ error: "Missing playerId" });
-  const player = db.prepare("SELECT id, name, team FROM players WHERE id = ?").get(playerId) as any;
-  if (!player) return res.status(404).json({ error: "Player not found" });
+  const player = db.prepare("SELECT id, name, team, user_id FROM players WHERE id = ?").get(playerId) as any;
+  if (!player || player.user_id !== req.userId) return res.status(404).json({ error: "Player not found" });
   const team = await getLiquipediaPlayerTeam(player.name);
   if (team != null) {
     db.prepare("UPDATE players SET team = ? WHERE id = ?").run(team, playerId);
@@ -567,9 +731,10 @@ app.get("/api/refresh-player-team", async (req, res) => {
   res.json({ success: true, player: updated, team: team ?? updated.team });
 });
 
-app.post("/api/backfill-teams", async (req, res) => {
-  await backfillPlayerTeams();
-  const players = db.prepare("SELECT * FROM players").all();
+app.post("/api/backfill-teams", async (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
+  await backfillPlayerTeams(req.userId);
+  const players = db.prepare("SELECT * FROM players WHERE user_id = ?").all(req.userId);
   res.json({ success: true, players });
 });
 
@@ -604,8 +769,9 @@ app.get("/api/image-proxy", async (req, res) => {
   }
 });
 
-app.post("/api/backfill-photos", async (req, res) => {
-  const needPhoto = db.prepare("SELECT id, name FROM players WHERE image_url IS NULL OR image_url = ''").all() as { id: string; name: string }[];
+app.post("/api/backfill-photos", async (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
+  const needPhoto = db.prepare("SELECT id, name FROM players WHERE (image_url IS NULL OR image_url = '') AND user_id = ?").all(req.userId) as { id: string; name: string }[];
   const results: { name: string; ok: boolean }[] = [];
   for (const p of needPhoto) {
     try {
@@ -625,21 +791,22 @@ app.post("/api/backfill-photos", async (req, res) => {
       results.push({ name: p.name, ok: false });
     }
   }
-  const players = db.prepare("SELECT * FROM players").all();
+  const players = db.prepare("SELECT * FROM players WHERE user_id = ?").all(req.userId);
   res.json({ success: true, players, results });
 });
 
-app.post("/api/recruit", async (req, res) => {
-  const state = db.prepare("SELECT coins, collection_slots FROM game_state WHERE id = 1").get() as any;
+app.post("/api/recruit", async (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
+  const state = getOrCreateState(req.userId) as any;
   if (state.coins < 200) return res.status(400).json({ error: "Not enough coins" });
-  const playerCount = (db.prepare("SELECT COUNT(*) as c FROM players").get() as any).c;
+  const playerCount = (db.prepare("SELECT COUNT(*) as c FROM players WHERE user_id = ?").get(req.userId) as any).c;
   const slots = state.collection_slots ?? 8;
   if (playerCount >= slots) return res.status(400).json({ error: "Collection full. Buy more slots in Shop (10,000)." });
 
   // Gacha: use RECRUIT_RATES and RECRUIT_POOL (same as Rates tab)
   const rand = Math.random() * 100;
   let cumulative = 0;
-  let tier = RECRUIT_RATES[0].tier;
+  let tier: "Common" | "Rare" | "Epic" | "Legendary" | "Mythic" = RECRUIT_RATES[0].tier;
   for (const { tier: t, rate } of RECRUIT_RATES) {
     cumulative += rate;
     if (rand < cumulative) {
@@ -668,11 +835,11 @@ app.post("/api/recruit", async (req, res) => {
   const team = cached?.team ?? KNOWN_PLAYER_TEAMS[name] ?? "Kukuys";
 
   db.prepare(`
-    INSERT INTO players (id, name, tier, role, drafting, mechanics, mental_strength, leadership, trashtalk, image_url, team)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, name, tier, role, stats.drafting, stats.mechanics, stats.mental_strength, stats.leadership, stats.trashtalk, imageUrl, team);
+    INSERT INTO players (id, name, tier, role, drafting, mechanics, mental_strength, leadership, trashtalk, image_url, team, user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, name, tier, role, stats.drafting, stats.mechanics, stats.mental_strength, stats.leadership, stats.trashtalk, imageUrl, team, req.userId);
 
-  db.prepare("UPDATE game_state SET coins = coins - 200 WHERE id = 1").run();
+  db.prepare("UPDATE game_state SET coins = coins - 200 WHERE user_id = ?").run(req.userId);
 
   const playerRow = db.prepare("SELECT * FROM players WHERE id = ?").get(id) as any;
   res.json({ player: playerRow ? { ...playerRow, energy: 100 } : { id, name, tier, role, ...stats, energy: 100, image_url: imageUrl, team } });
@@ -681,12 +848,13 @@ app.post("/api/recruit", async (req, res) => {
 const SLOT_EXPAND_COST = 10000;
 const SLOT_EXPAND_AMOUNT = 1;
 
-app.post("/api/expand-collection", (req, res) => {
-  const state = db.prepare("SELECT coins, collection_slots FROM game_state WHERE id = 1").get() as any;
+app.post("/api/expand-collection", (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
+  const state = getOrCreateState(req.userId) as any;
   if (!state) return res.status(500).json({ error: "No game state" });
   if (state.coins < SLOT_EXPAND_COST) return res.status(400).json({ error: "Not enough coins. Need 10,000." });
-  db.prepare("UPDATE game_state SET coins = coins - ?, collection_slots = collection_slots + ? WHERE id = 1").run(SLOT_EXPAND_COST, SLOT_EXPAND_AMOUNT);
-  const newState = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
+  db.prepare("UPDATE game_state SET coins = coins - ?, collection_slots = collection_slots + ? WHERE user_id = ?").run(SLOT_EXPAND_COST, SLOT_EXPAND_AMOUNT, req.userId);
+  const newState = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(req.userId);
   res.json({ success: true, state: newState });
 });
 
@@ -758,14 +926,15 @@ app.get("/api/recruit-config", (req, res) => {
 });
 
 // Remove all players and reset game state so only gacha (Player pool per tier) can be recruited
-app.post("/api/reset-collection", (req, res) => {
+app.post("/api/reset-collection", (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   try {
-    db.prepare("DELETE FROM players").run();
+    db.prepare("DELETE FROM players WHERE user_id = ?").run(req.userId);
     db.prepare(`
-      UPDATE game_state SET coins = 1000, collection_slots = 8, internet_level = 1, food_level = 1, last_updated = CURRENT_TIMESTAMP WHERE id = 1
-    `).run();
-    const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
-    const players = db.prepare("SELECT * FROM players").all();
+      UPDATE game_state SET coins = 1000, collection_slots = 8, internet_level = 1, food_level = 1, last_updated = CURRENT_TIMESTAMP WHERE user_id = ?
+    `).run(req.userId);
+    const state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(req.userId);
+    const players = db.prepare("SELECT * FROM players WHERE user_id = ?").all(req.userId);
     return res.json({ success: true, state, players });
   } catch (e) {
     console.error("Reset collection error:", e);
@@ -773,20 +942,21 @@ app.post("/api/reset-collection", (req, res) => {
   }
 });
 
-app.post("/api/recycle-player", (req, res) => {
+app.post("/api/recycle-player", (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   try {
     const playerId = req.body?.playerId;
     if (playerId == null || String(playerId).trim() === "") {
       return res.status(400).json({ error: "Missing player ID" });
     }
     const player = db.prepare("SELECT * FROM players WHERE id = ?").get(playerId) as any;
-    if (!player) {
+    if (!player || player.user_id !== req.userId) {
       return res.status(404).json({ error: "Player not found" });
     }
     db.prepare("DELETE FROM players WHERE id = ?").run(playerId);
-    db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(RECYCLE_COINS);
-    const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
-    const players = db.prepare("SELECT * FROM players").all();
+    db.prepare("UPDATE game_state SET coins = coins + ? WHERE user_id = ?").run(RECYCLE_COINS, req.userId);
+    const state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(req.userId);
+    const players = db.prepare("SELECT * FROM players WHERE user_id = ?").all(req.userId);
     return res.json({ success: true, state, players });
   } catch (e) {
     console.error("Recycle error:", e);
@@ -794,16 +964,17 @@ app.post("/api/recycle-player", (req, res) => {
   }
 });
 
-app.post("/api/action", (req, res) => {
+app.post("/api/action", (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   const { playerId, action } = req.body;
   const player = db.prepare("SELECT * FROM players WHERE id = ?").get(playerId) as any;
-  if (!player) return res.status(404).json({ error: "Player not found" });
+  if (!player || player.user_id !== req.userId) return res.status(404).json({ error: "Player not found" });
 
   if (action === "recycle") {
     db.prepare("DELETE FROM players WHERE id = ?").run(playerId);
-    db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(RECYCLE_COINS);
-    const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
-    const players = db.prepare("SELECT * FROM players").all();
+    db.prepare("UPDATE game_state SET coins = coins + ? WHERE user_id = ?").run(RECYCLE_COINS, req.userId);
+    const state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(req.userId);
+    const players = db.prepare("SELECT * FROM players WHERE user_id = ?").all(req.userId);
     return res.json({ success: true, state, players });
   }
 
@@ -822,7 +993,8 @@ app.post("/api/action", (req, res) => {
     db.prepare(`
       UPDATE players 
       SET energy = MAX(0, energy - 20),
-          grinding_until = ?
+          grinding_until = ?,
+          is_streaming = 0
       WHERE id = ?
     `).run(now + GRIND_DURATION_MS, playerId);
   } else if (action === "sleep") {
@@ -833,16 +1005,16 @@ app.post("/api/action", (req, res) => {
     if (player.sleeping_until != null && player.sleeping_until > now) {
       return res.status(400).json({ error: "Already sleeping. Cannot interrupt — wait until they wake." });
     }
-    db.prepare("UPDATE players SET sleeping_until = ? WHERE id = ?").run(now + SLEEP_DURATION_MS, playerId);
+    db.prepare("UPDATE players SET sleeping_until = ?, is_streaming = 0 WHERE id = ?").run(now + SLEEP_DURATION_MS, playerId);
   } else if (action === "toggle_stream") {
     db.prepare("UPDATE players SET is_streaming = 1 - is_streaming WHERE id = ?").run(playerId);
   } else if (action === "toggle_roster") {
-    const rosterCount = db.prepare("SELECT COUNT(*) as count FROM players WHERE is_roster = 1").get() as any;
+    const rosterCount = db.prepare("SELECT COUNT(*) as count FROM players WHERE is_roster = 1 AND user_id = ?").get(req.userId) as any;
     if (player.is_roster === 0 && rosterCount.count >= 5) {
       return res.status(400).json({ error: "Roster full (max 5)" });
     }
     if (player.is_roster === 0) {
-      const sameNameInRoster = db.prepare("SELECT id FROM players WHERE is_roster = 1 AND name = ? AND id != ?").get(player.name, playerId) as { id: string } | undefined;
+      const sameNameInRoster = db.prepare("SELECT id FROM players WHERE is_roster = 1 AND name = ? AND id != ? AND user_id = ?").get(player.name, playerId, req.userId) as { id: string } | undefined;
       if (sameNameInRoster) {
         return res.status(400).json({ error: "That player is already in your roster (one copy per player)." });
       }
@@ -850,7 +1022,7 @@ app.post("/api/action", (req, res) => {
       const ROLE_LIMITS: Record<string, number> = { Carry: 1, Midlaner: 1, Offlaner: 1, Support: 2 };
       const role = (player.role as string) || "Support";
       const limit = ROLE_LIMITS[role] ?? 2;
-      const currentRoleCount = (db.prepare("SELECT COUNT(*) as c FROM players WHERE is_roster = 1 AND role = ?").get(role) as any).c;
+      const currentRoleCount = (db.prepare("SELECT COUNT(*) as c FROM players WHERE is_roster = 1 AND role = ? AND user_id = ?").get(role, req.userId) as any).c;
       if (currentRoleCount >= limit) {
         return res.status(400).json({ error: `Roster already has ${limit} ${role}(s). Max allowed: ${limit}.` });
       }
@@ -860,8 +1032,8 @@ app.post("/api/action", (req, res) => {
 
   resolveExpiredGrinds();
   resolveExpiredSleeps();
-  const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
-  const players = db.prepare("SELECT * FROM players").all();
+  const state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(req.userId);
+  const players = db.prepare("SELECT * FROM players WHERE user_id = ?").all(req.userId);
   res.json({ success: true, state, players });
 });
 
@@ -956,15 +1128,16 @@ interface BracketMatchResult {
   mapResults: string[];
 }
 
-app.post("/api/tournament-run", (req, res) => {
+app.post("/api/tournament-run", (req: any, res) => {
+  if (req.userId == null) return res.status(401).json({ error: "Login required" });
   resolveExpiredGrinds();
   resolveExpiredSleeps();
-  const roster = db.prepare("SELECT mechanics, drafting FROM players WHERE is_roster = 1").all() as { mechanics: number; drafting: number }[];
+  const roster = db.prepare("SELECT mechanics, drafting FROM players WHERE is_roster = 1 AND user_id = ?").all(req.userId) as { mechanics: number; drafting: number }[];
   if (roster.length < 5) {
     return res.status(400).json({ error: "Need 5 players in roster to enter the tournament." });
   }
   const now = Date.now();
-  const grinding = db.prepare("SELECT id FROM players WHERE is_roster = 1 AND grinding_until IS NOT NULL AND grinding_until > ?").get(now);
+  const grinding = db.prepare("SELECT id FROM players WHERE is_roster = 1 AND user_id = ? AND grinding_until IS NOT NULL AND grinding_until > ?").get(req.userId, now);
   if (grinding) {
     return res.status(400).json({ error: "Someone is still grinding. Wait until all grind sessions finish." });
   }
@@ -1072,10 +1245,10 @@ app.post("/api/tournament-run", (req, res) => {
 
   let coinsAwarded = 0;
   if (champion === KUKUYS_TEAM) {
-    db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(CHAMPION_COINS);
+    db.prepare("UPDATE game_state SET coins = coins + ? WHERE user_id = ?").run(CHAMPION_COINS, req.userId);
     coinsAwarded = CHAMPION_COINS;
   }
-  const state = db.prepare("SELECT * FROM game_state WHERE id = 1").get();
+  const state = db.prepare("SELECT * FROM game_state WHERE user_id = ?").get(req.userId);
   const tournamentName = REAL_TOURNAMENTS[Math.floor(Math.random() * REAL_TOURNAMENTS.length)];
   res.json({
     tournamentName,
@@ -1086,13 +1259,15 @@ app.post("/api/tournament-run", (req, res) => {
   });
 });
 
-// Passive Income (Simplified for MVP)
+// Passive Income (per user: streaming players generate coins)
 setInterval(() => {
   try {
-    const streamingPlayers = db.prepare("SELECT COUNT(*) as count FROM players WHERE is_streaming = 1").get() as any;
-    const income = streamingPlayers.count * 10;
-    if (income > 0) {
-      db.prepare("UPDATE game_state SET coins = coins + ? WHERE id = 1").run(income);
+    const usersWithStreaming = db.prepare("SELECT user_id, COUNT(*) as count FROM players WHERE is_streaming = 1 GROUP BY user_id").all() as { user_id: number; count: number }[];
+    for (const u of usersWithStreaming) {
+      const income = u.count * 10;
+      if (income > 0) {
+        db.prepare("UPDATE game_state SET coins = coins + ? WHERE user_id = ?").run(income, u.user_id);
+      }
     }
     db.prepare("UPDATE players SET energy = MAX(0, energy - 2) WHERE is_streaming = 1").run();
   } catch (e) { console.error("Passive income error:", e); }

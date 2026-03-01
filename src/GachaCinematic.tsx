@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, animate, type MotionValue } from 'motion/react';
-import { Sparkles, ChevronRight } from 'lucide-react';
+import { Sparkles, ChevronRight, Recycle } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -49,6 +49,13 @@ const TIER_FLASH_COLORS: Record<string, { glow: string; bg: string; glowStrong: 
   Mythic: { glow: 'rgba(251,113,133,1)', bg: 'rgba(251,113,133,0.4)', glowStrong: 'rgba(251,113,133,0.95)' },
 };
 
+/** Color flare burst by tier: Epic purple, Legendary gold, Mythic amethyst-red */
+const COLOR_FLARE_BURST: Record<string, { inner: string; outer: string; lensGradient: string }> = {
+  Epic: { inner: 'rgba(200,150,255,0.95)', outer: 'rgba(168,85,247,0.75)', lensGradient: 'linear-gradient(to bottom right, rgba(255,255,255,0.9), rgba(196,181,253,0.4), rgba(255,255,255,0.9))' },
+  Legendary: { inner: 'rgba(255,220,100,0.95)', outer: 'rgba(251,191,36,0.75)', lensGradient: 'linear-gradient(to bottom right, rgba(255,255,255,0.9), rgba(254,243,199,0.4), rgba(255,255,255,0.9))' },
+  Mythic: { inner: 'rgba(255,120,140,0.95)', outer: 'rgba(251,113,133,0.8)', lensGradient: 'linear-gradient(to bottom right, rgba(255,255,255,0.9), rgba(254,205,211,0.5), rgba(255,255,255,0.9))' },
+};
+
 // Sound hooks (placeholder – integrate with your audio system)
 const useGachaSound = () => ({
   playFlash: () => {},
@@ -80,8 +87,8 @@ function CinematicBackground({ variant }: { variant?: 'anticipation' | 'portal' 
           />
         </>
       )}
-      {/* Premium god rays – rose/red */}
-      {[...Array(7)].map((_, i) => (
+      {/* Premium god rays – rose/red (reduced for mobile perf) */}
+      {[...Array(4)].map((_, i) => (
         <motion.div
           key={i}
           className="absolute w-[2px] h-full bg-gradient-to-b from-rose-500/12 via-rose-400/6 to-transparent origin-top"
@@ -94,34 +101,34 @@ function CinematicBackground({ variant }: { variant?: 'anticipation' | 'portal' 
           transition={{ duration: 3 + i * 0.5, repeat: Infinity, ease: 'easeInOut' }}
         />
       ))}
-      {/* Bokeh / ambient orbs – reddish */}
-      {[...Array(6)].map((_, i) => (
+      {/* Bokeh / ambient orbs – reddish (reduced blur for mobile) */}
+      {[...Array(3)].map((_, i) => (
         <motion.div
           key={`bokeh-${i}`}
           className="absolute rounded-full"
           style={{
-            width: 100 + i * 60,
-            height: 100 + i * 60,
-            left: `${(i * 17) % 80}%`,
-            top: `${20 + (i * 13) % 50}%`,
-            background: `radial-gradient(circle, rgba(225,29,72,0.08)_0%, rgba(185,28,28,0.04)_40%, transparent_70%)`,
-            filter: 'blur(40px)',
+            width: 80 + i * 40,
+            height: 80 + i * 40,
+            left: `${(i * 30) % 70}%`,
+            top: `${25 + (i * 20) % 40}%`,
+            background: `radial-gradient(circle, rgba(225,29,72,0.1)_0%, rgba(185,28,28,0.05)_40%, transparent_70%)`,
+            filter: 'blur(12px)',
           }}
           animate={{ opacity: [0.5, 1, 0.5], scale: [1, 1.2, 1] }}
           transition={{ duration: 5 + i, repeat: Infinity, ease: 'easeInOut', delay: i * 0.5 }}
         />
       ))}
-      {/* Smoke / depth – rose tones */}
-      {[...Array(6)].map((_, i) => (
+      {/* Smoke / depth – rose tones (reduced for mobile) */}
+      {[...Array(3)].map((_, i) => (
         <motion.div
           key={i}
           className="absolute rounded-full bg-gradient-to-br from-rose-900/15 to-red-950/10"
           style={{
-            width: 120 + i * 80,
-            height: 60 + i * 40,
-            left: `${(i * 15) % 70}%`,
-            top: `${25 + (i % 4) * 18}%`,
-            filter: 'blur(50px)',
+            width: 80 + i * 60,
+            height: 50 + i * 30,
+            left: `${(i * 35) % 60}%`,
+            top: `${30 + (i % 2) * 25}%`,
+            filter: 'blur(16px)',
           }}
           animate={{
             opacity: [0.08, 0.2, 0.08],
@@ -155,26 +162,26 @@ function PortalPhase({ colorIndex }: { colorIndex: number }) {
       transition={{ duration: 0.8 }}
     >
       {/* No dark overlay – let modal backdrop show through */}
-      {/* Jarvis-style radial rays – thin beams from center */}
+      {/* Jarvis-style radial rays (reduced for mobile perf) */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px]">
-        {[...Array(24)].map((_, i) => (
+        {[...Array(12)].map((_, i) => (
           <motion.div
             key={`ray-${i}`}
             className="absolute left-1/2 top-1/2 h-[1px] origin-left"
             style={{
               width: 300,
               background: `linear-gradient(90deg, ${c} 0%, transparent 80%)`,
-              boxShadow: `0 0 12px ${c}, 0 0 24px ${c}`,
-              transform: `rotate(${i * 15}deg)`,
+              boxShadow: `0 0 8px ${c}`,
+              transform: `rotate(${i * 30}deg)`,
             }}
             animate={{ opacity: [0.5, 1, 0.5] }}
             transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut', delay: i * 0.03 }}
           />
         ))}
       </div>
-      {/* Secondary ray layer – offset angle, shorter */}
+      {/* Secondary ray layer */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px]">
-        {[...Array(12)].map((_, i) => (
+        {[...Array(6)].map((_, i) => (
           <motion.div
             key={`ray2-${i}`}
             className="absolute left-1/2 top-1/2 h-[2px] origin-left"
@@ -193,7 +200,7 @@ function PortalPhase({ colorIndex }: { colorIndex: number }) {
         className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 rounded-full"
         style={{
           background: `radial-gradient(circle, rgba(255,255,255,0.9) 0%, ${c} 40%, transparent 70%)`,
-          boxShadow: `0 0 60px ${c}, 0 0 120px ${c}`,
+          boxShadow: `0 0 30px ${c}`,
         }}
         animate={{ scale: [1, 1.2, 1], opacity: [0.9, 1, 0.9] }}
         transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
@@ -227,8 +234,8 @@ function PortalPhase({ colorIndex }: { colorIndex: number }) {
         animate={{ top: ['0%', '100%'] }}
         transition={{ duration: 2.5, repeat: Infinity, ease: 'linear' }}
       />
-      {/* Floating particles – subtle tech dust */}
-      {[...Array(12)].map((_, i) => (
+      {/* Floating particles (reduced for mobile) */}
+      {[...Array(6)].map((_, i) => (
         <motion.div
           key={`particle-${i}`}
           className="absolute w-1 h-1 rounded-full"
@@ -340,17 +347,6 @@ function CardBack({
               }
         }
       >
-        {/* Central emblem – text only */}
-        <div className="relative flex items-center justify-center">
-          <motion.span
-            className="font-[Cinzel] font-bold text-5xl tracking-[0.4em] relative z-10 text-zinc-500/90"
-            style={
-              useWave && waveEmblemShadow ? { textShadow: waveEmblemShadow } : { textShadow: intense ? `0 0 30px ${glowColor}60` : '0 0 20px rgba(225,29,72,0.2)' }
-            }
-          >
-            ???
-          </motion.span>
-        </div>
         {/* Corner flourishes – rose */}
         <div className="absolute top-2 left-2 w-6 h-6 border-l-2 border-t-2 rounded-tl-lg opacity-50" style={{ borderColor: 'rgba(225,29,72,0.6)' }} />
         <div className="absolute top-2 right-2 w-6 h-6 border-r-2 border-t-2 rounded-tr-lg opacity-50" style={{ borderColor: 'rgba(225,29,72,0.6)' }} />
@@ -367,6 +363,7 @@ interface GachaCinematicProps {
   player: Player;
   style: TierCardStyle;
   onCollect: () => void;
+  onRecycle?: () => void;
   CollectionCardPhoto: React.ComponentType<{ player: Player }>;
   StatRadar: React.ComponentType<{
     mechanics: number;
@@ -387,6 +384,7 @@ export function GachaCinematic({
   player,
   style,
   onCollect,
+  onRecycle,
   CollectionCardPhoto,
   StatRadar,
 }: GachaCinematicProps) {
@@ -506,7 +504,7 @@ export function GachaCinematic({
       role={phase === 'revealed' ? 'button' : undefined}
       tabIndex={phase === 'revealed' ? 0 : undefined}
     >
-      <div className="absolute inset-0 bg-gradient-to-b from-black/98 via-black/95 to-black/98 backdrop-blur-md" />
+      <div className="absolute inset-0 bg-gradient-to-b from-black/98 via-black/95 to-black/98" />
       <CinematicBackground variant={phase === 'cardBack' ? 'anticipation' : undefined} />
 
       {/* Portal phase – full-screen (vortex, orbs, swirling light) */}
@@ -516,50 +514,68 @@ export function GachaCinematic({
         </div>
       )}
 
-      {/* Color flare phase – premium gold explosion, lens flare, screen shake */}
-      {phase === 'colorFlare' && (
-        <motion.div
-          className="fixed inset-0 z-[112] flex items-center justify-center pointer-events-none overflow-hidden"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1, x: [0, 6, -6, 6, 0] }}
-          transition={{
-            opacity: { duration: 0.2 },
-            x: { duration: 0.5, times: [0, 0.2, 0.4, 0.6, 0.8, 1] },
-          }}
-        >
-          {/* Luxury gold explosion – layered */}
+      {/* Color flare phase – tier-specific burst (Epic purple, Legendary gold, Mythic amethyst-red) */}
+      {phase === 'colorFlare' && (() => {
+        const burst = COLOR_FLARE_BURST[player.tier] ?? COLOR_FLARE_BURST.Legendary;
+        const isMythicFlare = player.tier === 'Mythic';
+        return (
           <motion.div
-            className="absolute inset-0 flex items-center justify-center"
-            animate={{
-              opacity: [0, 1, 0.9, 0.5],
-              scale: [0.3, 1.2, 1.8, 2.5],
+            className="fixed inset-0 z-[112] flex items-center justify-center pointer-events-none overflow-hidden"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1, x: [0, 6, -6, 6, 0] }}
+            transition={{
+              opacity: { duration: 0.2 },
+              x: { duration: isMythicFlare ? 0.6 : 0.5, times: [0, 0.2, 0.4, 0.6, 0.8, 1] },
             }}
-            transition={{ duration: 1.2, times: [0, 0.2, 0.5, 1] }}
           >
-            <div
-              className="w-[800px] h-[800px] rounded-full"
-              style={{
-                background: 'radial-gradient(circle, rgba(255,220,100,0.9) 0%, rgba(251,191,36,0.7) 25%, rgba(168,85,247,0.4) 50%, transparent 70%)',
-                filter: 'blur(80px)',
+            {/* Tier-colored explosion – purple/gold/amethyst-red */}
+            <motion.div
+              className="absolute inset-0 flex items-center justify-center"
+              animate={{
+                opacity: [0, 1, 0.9, 0.5],
+                scale: [0.3, 1.2, isMythicFlare ? 2.2 : 1.8, 2.5],
               }}
-            />
-            <div
-              className="absolute w-[400px] h-[400px] rounded-full"
-              style={{
-                background: 'radial-gradient(circle, rgba(255,255,255,0.6) 0%, transparent 60%)',
-                filter: 'blur(60px)',
-              }}
+              transition={{ duration: 1.2, times: [0, 0.2, 0.5, 1] }}
+            >
+              <div
+                className="w-[600px] h-[600px] rounded-full"
+                style={{
+                  background: `radial-gradient(circle, ${burst.inner} 0%, ${burst.outer} 30%, transparent 70%)`,
+                  filter: 'blur(12px)',
+                }}
+              />
+              <div
+                className="absolute w-[300px] h-[300px] rounded-full"
+                style={{
+                  background: 'radial-gradient(circle, rgba(255,255,255,0.6) 0%, transparent 60%)',
+                  filter: 'blur(8px)',
+                }}
+              />
+              {/* Mythic special: extra radiating burst */}
+              {isMythicFlare && (
+                <motion.div
+                  className="absolute w-[400px] h-[400px] rounded-full"
+                  style={{
+                    background: 'radial-gradient(circle, rgba(251,113,133,0.5) 0%, rgba(148,51,148,0.2) 40%, transparent 70%)',
+                    filter: 'blur(16px)',
+                  }}
+                  initial={{ opacity: 0, scale: 0.5 }}
+                  animate={{ opacity: [0, 0.9, 0.4], scale: [0.5, 1.5, 2] }}
+                  transition={{ duration: 1, times: [0, 0.3, 1] }}
+                />
+              )}
+            </motion.div>
+            {/* Lens flare – tier-tinted */}
+            <motion.div
+              className="absolute inset-0"
+              style={{ background: burst.lensGradient }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: [0, 1, 0.95, 0] }}
+              transition={{ duration: 0.5, times: [0, 0.1, 0.2, 0.4] }}
             />
           </motion.div>
-          {/* Lens flare white flash */}
-          <motion.div
-            className="absolute inset-0 bg-gradient-to-br from-white/90 via-amber-100/30 to-white/90"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: [0, 1, 0.95, 0] }}
-            transition={{ duration: 0.5, times: [0, 0.1, 0.2, 0.4] }}
-          />
-        </motion.div>
-      )}
+        );
+      })()}
 
       <div className="relative z-10 flex flex-col items-center justify-center gap-8 w-full max-w-md">
         <AnimatePresence mode="wait">
@@ -594,10 +610,10 @@ export function GachaCinematic({
                   <motion.div
                     className="rounded-full"
                     style={{
-                      width: 720,
-                      height: 820,
+                      width: 560,
+                      height: 640,
                       background: waveAmbientBg,
-                      filter: 'blur(80px)',
+                      filter: 'blur(12px)',
                     }}
                   />
                   <motion.div
@@ -612,7 +628,7 @@ export function GachaCinematic({
                 </motion.div>
               )}
 
-              <div className="flex justify-center" style={{ perspective: 1200 }}>
+              <div className="flex justify-center" style={{ perspective: 1200, willChange: 'transform' }}>
                 <motion.div
                   drag="x"
                   dragConstraints={{ left: 0, right: 400 }}
@@ -625,6 +641,8 @@ export function GachaCinematic({
                     rotateY,
                     transformOrigin: 'center center',
                     transformStyle: 'preserve-3d',
+                    backfaceVisibility: 'hidden' as const,
+                    WebkitBackfaceVisibility: 'hidden',
                   }}
                   className="touch-none select-none"
                   whileTap={{ scale: 1.02 }}
@@ -660,13 +678,13 @@ export function GachaCinematic({
                   transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
                 >
                   <div
-                    className="absolute inset-0 rounded-full blur-[120px]"
+                    className="absolute inset-0 rounded-full blur-[32px]"
                     style={{
                       background: `radial-gradient(circle, ${TIER_FLASH_COLORS[player.tier]?.bg ?? 'rgba(251,191,36,0.25)'} 0%, rgba(120,53,180,0.1) 40%, transparent 65%)`,
                     }}
                   />
                   <div
-                    className="absolute inset-0 rounded-full blur-[80px] opacity-60"
+                    className="absolute inset-0 rounded-full blur-[24px] opacity-60"
                     style={{
                       background: `radial-gradient(circle, rgba(251,191,36,0.15) 0%, transparent 50%)`,
                     }}
@@ -682,12 +700,12 @@ export function GachaCinematic({
                   animate={{ opacity: 1, scale: 1 }}
                   transition={{ duration: 0.6 }}
                 >
-                  <div className="absolute inset-0 bg-rose-500/20 rounded-full blur-[100px]" />
+                  <div className="absolute inset-0 bg-rose-500/20 rounded-full blur-[28px]" />
                 </motion.div>
               )}
 
-              {/* Card with 3D flip + scale pop (110% → settle) */}
-              <div className="w-full" style={{ perspective: 1200 }}>
+              {/* Card with 3D flip + scale pop (GPU-accelerated) */}
+              <div className="w-full" style={{ perspective: 1200, willChange: 'transform' }}>
                 <motion.div
                   initial={{ rotateY: 180, scale: 0.95, z: -100 }}
                   animate={{
@@ -703,6 +721,8 @@ export function GachaCinematic({
                   style={{
                     transformStyle: 'preserve-3d',
                     transformOrigin: 'center center',
+                    backfaceVisibility: 'hidden',
+                    WebkitBackfaceVisibility: 'hidden',
                   }}
                   className={`relative w-full rounded-2xl p-[4px] overflow-hidden bg-gradient-to-br ${style.borderGradient} ${style.glow}`}
                 >
@@ -718,7 +738,7 @@ export function GachaCinematic({
                         className="w-2/3 h-full"
                         style={{
                           background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 20%, rgba(251,191,36,0.25) 50%, rgba(255,255,255,0.15) 80%, transparent 100%)',
-                          filter: 'blur(30px)',
+                          filter: 'blur(8px)',
                         }}
                       />
                     </motion.div>
@@ -802,22 +822,37 @@ export function GachaCinematic({
 
               {phase === 'revealed' && (
                 <>
-                  <motion.button
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.4, type: 'spring', stiffness: 200 }}
-                    onClick={(e) => { e.stopPropagation(); onCollect(); }}
-                    className="relative overflow-hidden flex items-center justify-center gap-3 px-12 py-4 font-[Cinzel] font-bold text-lg uppercase tracking-[0.2em] rounded-xl hover:scale-105 active:scale-100 transition-transform"
-                    style={{
-                      background: 'linear-gradient(135deg, #10b981 0%, #059669 50%, #047857 100%)',
-                      color: 'white',
-                      border: '1px solid rgba(251,191,36,0.4)',
-                      boxShadow: '0 0 40px rgba(16,185,129,0.4), 0 0 80px rgba(251,191,36,0.2)',
-                    }}
-                  >
-                    <Sparkles size={22} strokeWidth={2.5} className="drop-shadow-[0_0_6px_rgba(255,255,255,0.5)]" />
-                    Add to Collection
-                  </motion.button>
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    <motion.button
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.4, type: 'spring', stiffness: 200 }}
+                      onClick={(e) => { e.stopPropagation(); onCollect(); }}
+                      className="relative overflow-hidden flex items-center justify-center gap-3 px-12 py-4 font-[Cinzel] font-bold text-lg uppercase tracking-[0.2em] rounded-xl hover:scale-105 active:scale-100 transition-transform"
+                      style={{
+                        background: 'linear-gradient(135deg, #10b981 0%, #059669 50%, #047857 100%)',
+                        color: 'white',
+                        border: '1px solid rgba(251,191,36,0.4)',
+                        boxShadow: '0 0 40px rgba(16,185,129,0.4), 0 0 80px rgba(251,191,36,0.2)',
+                      }}
+                    >
+                      <Sparkles size={22} strokeWidth={2.5} className="drop-shadow-[0_0_6px_rgba(255,255,255,0.5)]" />
+                      Add to Collection
+                    </motion.button>
+                    {onRecycle && (
+                      <motion.button
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.45, type: 'spring', stiffness: 200 }}
+                        onClick={(e) => { e.stopPropagation(); onRecycle(); }}
+                        title="Recycle for 10 coins"
+                        className="flex items-center justify-center gap-2 px-6 py-4 font-[Cinzel] font-semibold text-sm uppercase tracking-[0.15em] rounded-xl border border-amber-500/50 bg-amber-950/60 text-amber-200 hover:bg-amber-900/50 hover:scale-105 active:scale-100 transition-all"
+                      >
+                        <Recycle className="w-5 h-5" />
+                        Recycle
+                      </motion.button>
+                    )}
+                  </div>
                   <motion.p
                     animate={{ opacity: [0.5, 1, 0.5] }}
                     transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}

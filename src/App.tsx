@@ -19,6 +19,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { GachaCinematic } from './GachaCinematic';
+import { useAuth } from './AuthContext';
 
 interface Player {
   id: string;
@@ -432,7 +433,68 @@ function StatRadar({ mechanics, drafting, mental_strength, trashtalk, tier }: { 
   );
 }
 
+function LoginPage() {
+  const { login, register } = useAuth();
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    const result = mode === 'login' ? await login(username, password) : await register(username, password);
+    setLoading(false);
+    if (!result.ok) setError(result.error ?? 'Failed');
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-[#0a080c] via-[#080608] to-[#050505] flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-zinc-900/80 border border-zinc-700/60 p-6 shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
+        <h1 className="font-[Cinzel] text-2xl font-bold text-white text-center mb-6">Kukuys Master</h1>
+        <p className="text-zinc-500 text-sm text-center mb-6">Log in or register to save your collection</p>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <input
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-600 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-600 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"
+            required
+          />
+          {error && <p className="text-red-400 text-sm">{error}</p>}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 rounded-xl bg-emerald-500 text-black font-bold hover:bg-emerald-400 disabled:opacity-50 transition-colors"
+          >
+            {loading ? '…' : mode === 'login' ? 'Log in' : 'Register'}
+          </button>
+        </form>
+        <button
+          type="button"
+          onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}
+          className="w-full mt-4 text-zinc-400 text-sm hover:text-white transition-colors"
+        >
+          {mode === 'login' ? "Don't have an account? Register" : 'Already have an account? Log in'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const { user, loading: authLoading, getAuthHeaders, logout } = useAuth();
   const [state, setState] = useState<GameState | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [sortMode, setSortMode] = useState<'newest' | 'oldest' | 'rarity' | 'best' | 'worst'>('newest');
@@ -575,8 +637,12 @@ export default function App() {
   const fetchData = async () => {
     try {
       const url = `${API_BASE}/api/state`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: getAuthHeaders() });
       const ct = res.headers.get('content-type') || '';
+      if (res.status === 401) {
+        logout();
+        return;
+      }
       if (!res.ok) {
         setApiError(`Backend returned ${res.status}. Check Railway is running and VITE_API_URL is correct.`);
         return;
@@ -601,7 +667,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/recruit-config`)
+    fetch(`${API_BASE}/api/recruit-config`, { headers: getAuthHeaders() })
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d.rates) && d.pool && typeof d.pool === 'object') setRecruitConfig({ rates: d.rates, pool: d.pool });
@@ -610,7 +676,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/tournaments`)
+    fetch(`${API_BASE}/api/tournaments`, { headers: getAuthHeaders() })
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d.tournaments) && d.tournaments.length > 0) {
@@ -636,7 +702,7 @@ export default function App() {
     const withoutPhoto = players.filter((p) => !p.image_url && !refreshedIdsRef.current.has(p.id));
     if (withoutPhoto.length === 0) return;
     const next = withoutPhoto[0];
-    fetch(`${API_BASE}/api/refresh-player-image?playerId=${encodeURIComponent(next.id)}`)
+    fetch(`${API_BASE}/api/refresh-player-image?playerId=${encodeURIComponent(next.id)}`, { headers: getAuthHeaders() })
       .then((r) => r.json())
       .then((data) => {
         refreshedIdsRef.current.add(next.id);
@@ -651,7 +717,7 @@ export default function App() {
   const handleAction = async (playerId: string, action: string) => {
     const res = await fetch(`${API_BASE}/api/action`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ playerId, action }),
     });
     if (!res.ok) {
@@ -669,14 +735,14 @@ export default function App() {
   const handleRecruit = async () => {
     setIsRecruiting(true);
     try {
-      const res = await fetch(`${API_BASE}/api/recruit`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/recruit`, { method: 'POST', headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.player) {
           setState((s) => s ? { ...s, coins: s.coins - 200 } : s);
           setRecruitRevealPlayer(data.player);
+          // Don't fetchData here – it would add the new card to collection before gacha animation
         }
-        fetchData();
       } else {
         const data = await res.json();
         setToast(data.error ?? 'Recruit failed');
@@ -700,12 +766,51 @@ export default function App() {
     }
   };
 
+  const handleGachaRecycle = () => {
+    if (!recruitRevealPlayer) return;
+    const playerId = recruitRevealPlayer.id;
+    const playerName = recruitRevealPlayer.name;
+    setConfirmDialog({
+      message: `Recycle ${playerName}? You'll get 10 coins and remove them from your collection.`,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        setRecruitRevealPlayer(null);
+        try {
+          const res = await fetch(`${API_BASE}/api/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ playerId, action: 'recycle' }),
+          });
+          const text = await res.text();
+          let data: { success?: boolean; state?: GameState; players?: Player[]; error?: string };
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch {
+            setToast(`Recycle failed: server returned invalid response (${res.status})`);
+            fetchData();
+            return;
+          }
+          if (res.ok && data.success) {
+            if (data.state != null) setState(data.state);
+            if (Array.isArray(data.players)) setPlayers(data.players);
+          } else {
+            setToast(data.error || `Recycle failed (${res.status})`);
+          }
+        } catch (err) {
+          console.error(err);
+          setToast('Recycle failed: ' + (err instanceof Error ? err.message : 'network error'));
+        }
+        fetchData();
+      },
+    });
+  };
+
   const handleResetCollection = () => {
     setConfirmDialog({
       message: 'Remove ALL players and reset coins/slots? You will only be able to recruit from the Player pool (per tier) above.',
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await fetch(`${API_BASE}/api/reset-collection`, { method: 'POST' });
+        const res = await fetch(`${API_BASE}/api/reset-collection`, { method: 'POST', headers: getAuthHeaders() });
         if (res.ok) {
           const data = await res.json();
           if (data.state != null) setState(data.state);
@@ -719,7 +824,7 @@ export default function App() {
   };
 
   const handleExpandCollection = async () => {
-    const res = await fetch(`${API_BASE}/api/expand-collection`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}/api/expand-collection`, { method: 'POST', headers: getAuthHeaders() });
     if (res.ok) {
       fetchData();
     } else {
@@ -736,7 +841,7 @@ export default function App() {
         try {
           const res = await fetch(`${API_BASE}/api/action`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ playerId, action: 'recycle' }),
           });
           const text = await res.text();
@@ -779,7 +884,7 @@ export default function App() {
     setMatchResult(null);
     setMatchLog([]);
     try {
-      const res = await fetch(`${API_BASE}/api/tournament-run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const res = await fetch(`${API_BASE}/api/tournament-run`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: '{}' });
       const data = await res.json();
       if (!res.ok) {
         setToast(data.error || 'Failed to run tournament');
@@ -798,6 +903,8 @@ export default function App() {
     }
     setIsMatching(false);
   };
+
+  if (!authLoading && !user) return <LoginPage />;
 
   const apiStateUrl = API_BASE ? `${API_BASE}/api/state` : `${typeof window !== 'undefined' ? window.location.origin : ''}/api/state`;
   if (!state) return (
@@ -848,6 +955,18 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-5">
+            <div className="flex items-center gap-3">
+              <span className="text-zinc-500 text-sm">{user?.username}</span>
+              <motion.button
+                type="button"
+                onClick={logout}
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.98 }}
+                className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-semibold transition-colors"
+              >
+                Logout
+              </motion.button>
+            </div>
             <div className="flex flex-col items-end px-4 py-2 rounded-xl bg-zinc-900/60 border border-zinc-700/50">
               <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Kukuy Coins</span>
               <span className="text-emerald-400 font-mono text-xl font-bold drop-shadow-[0_0_12px_rgba(16,185,129,0.3)]">{state.coins.toLocaleString()}</span>
@@ -860,7 +979,7 @@ export default function App() {
                 setTestCoinsAdded(false);
                 const url = `${API_BASE || window.location.origin}/api/add-test-coins`;
                 try {
-                  const res = await fetch(url, { method: 'POST', credentials: 'same-origin' });
+                  const res = await fetch(url, { method: 'POST', credentials: 'same-origin', headers: getAuthHeaders() });
                   if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
                     console.error('Add test coins failed:', res.status, err);
@@ -1485,6 +1604,7 @@ export default function App() {
               player={recruitRevealPlayer}
               style={TIER_CARD_STYLES[recruitRevealPlayer.tier] ?? TIER_CARD_STYLES.Common}
               onCollect={handleGachaCollect}
+              onRecycle={handleGachaRecycle}
               CollectionCardPhoto={CollectionCardPhoto}
               StatRadar={StatRadar}
             />
@@ -1499,7 +1619,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
+            className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
             onClick={() => setConfirmDialog(null)}
           >
             <motion.div
